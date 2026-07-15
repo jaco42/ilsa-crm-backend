@@ -1,0 +1,35 @@
+import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth
+
+app = FastAPI(title="ILSA CRM API", version="1.0.0")
+
+_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth.router)
+app.include_router(companies.router)
+app.include_router(contacts.router)
+app.include_router(users.router)
+app.include_router(agenti.router)
+app.include_router(opportunities.router)
+app.include_router(prodotti.router)
+app.include_router(notes.router)
+app.include_router(orders.router)
+app.include_router(reminders.router)
+app.include_router(radar.router)
+app.include_router(dedup.router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
