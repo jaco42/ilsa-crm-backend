@@ -12,3 +12,4 @@ from app.models.reminder import EmailReminder
 from app.models.radar import RadarProdotto, RadarSegnalazione
 from app.models.dedup import DeduplicaAlert
 from app.models.company_sap_ids import CompanySapId
+from app.models.import_log import ImportLog

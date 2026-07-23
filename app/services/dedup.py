@@ -123,7 +123,7 @@ def merge_companies(survivor: Company, duplicate: Company, db) -> None:
     ordered = sorted([survivor, duplicate], key=_rank, reverse=True)
 
     for field in ("ragione_sociale", "partita_iva", "indirizzo", "citta", "cap",
-                  "provincia", "paese", "telefono", "email", "tipo_attivita", "provenienza"):
+                  "provincia", "paese", "telefono", "email", "tipo_attivita", "storico_contatti"):
         for record in ordered:
             val = getattr(record, field)
             if val:

@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload, contains_eager
-from sqlalchemy import func
 from app.database import get_db
 from app.models.note import Note
 from app.auth import get_current_user
@@ -32,14 +31,14 @@ def crea_nota(data: dict, db: Session = Depends(get_db)):
 
 @router.patch("/{note_id}")
 def aggiorna_nota(note_id: str, data: dict, db: Session = Depends(get_db)):
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).options(joinedload(Note.opportunity), joinedload(Note.contact)).filter(Note.id == note_id).first()
     if not note:
         raise HTTPException(status_code=404, detail="Nota non trovata")
     for k, v in data.items():
         setattr(note, k, v)
-    note.updated_at = func.now()
     db.commit()
-    db.refresh(note)
+    db.expire(note)
+    note = db.query(Note).options(joinedload(Note.opportunity), joinedload(Note.contact)).filter(Note.id == note_id).first()
     return _serialize(note)
 
 

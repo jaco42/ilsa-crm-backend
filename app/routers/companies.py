@@ -27,6 +27,8 @@ def lista_aziende(
     paese: str = Query(None),
     partita_iva: str = Query(None),
     provincia: str = Query(None),
+    storico_contatti: str = Query(None),
+    tipo_attivita: str = Query(None),
     sort_by: str = Query("ragione_sociale"),
     sort_dir: str = Query("asc"),
     limit: int = Query(100),
@@ -134,6 +136,10 @@ def lista_aziende(
                 q = q.filter(or_(*[Company.paese.ilike(p) for p in paesi]))
     elif provincia:
         q = q.filter(Company.provincia.ilike(provincia))
+    if storico_contatti:
+        q = q.filter(Company.storico_contatti.ilike(f"%{storico_contatti}%"))
+    if tipo_attivita:
+        q = q.filter(Company.tipo_attivita.ilike(f"%{tipo_attivita}%"))
 
     if con_offerte_attive:
         q = q.filter(func.coalesce(opp_stats.c.offerte_attive, 0) >= 1)
@@ -193,6 +199,7 @@ def lista_aziende(
             "sap_customer_id": c.sap_customer_id,
             "partita_iva": c.partita_iva,
             "telefono": c.telefono,
+            "email": c.email,
             "indirizzo": c.indirizzo,
             "cap": c.cap,
             "offerte_attive": int(row.offerte_attive),
@@ -203,7 +210,7 @@ def lista_aziende(
             "ordini_totali": int(row.ordini_totali),
             "valore_ordini": float(row.valore_ordini),
             "ultima_interazione_sap": row.ultima_interazione_sap.isoformat() if row.ultima_interazione_sap else None,
-            "provenienza": c.provenienza,
+            "storico_contatti": c.storico_contatti,
             "origin": c.origin,
             "created_by": c.created_by,
             "created_at": c.created_at.date().isoformat() if c.created_at else None,
@@ -252,7 +259,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db)):
         "sap_customer_id": company.sap_customer_id,
         "sap_created_at": company.sap_created_at.isoformat() if company.sap_created_at else None,
         "origin": company.origin,
-        "provenienza": company.provenienza,
+        "storico_contatti": company.storico_contatti,
         "created_by": company.created_by,
         "created_at": company.created_at.date().isoformat() if company.created_at else None,
         "updated_at": company.updated_at.isoformat() if company.updated_at else None,
@@ -263,7 +270,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db)):
 @router.post("/merge")
 def merge_aziende(data: dict, db: Session = Depends(get_db)):
     """data: { survivor_id, duplicate_ids: [id, ...] }"""
-    from app.services.dedup import merge_companies
+    from app.services.dedup import merge_companies, _rank
     survivor = db.query(Company).filter(Company.id == data["survivor_id"]).first()
     if not survivor:
         raise HTTPException(status_code=404, detail="Azienda survivor non trovata")
@@ -272,6 +279,11 @@ def merge_aziende(data: dict, db: Session = Depends(get_db)):
         duplicate = db.query(Company).filter(Company.id == dup_id).first()
         if not duplicate:
             raise HTTPException(status_code=404, detail=f"Azienda {dup_id} non trovata")
+        if _rank(duplicate) > _rank(survivor):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{duplicate.ragione_sociale}' ha status superiore al survivor scelto. Seleziona il record con status più alto come survivor (cliente > potenziale > lead)."
+            )
         merge_companies(survivor, duplicate, db)
     db.commit()
     return {"ok": True, "survivor_id": str(survivor.id)}
