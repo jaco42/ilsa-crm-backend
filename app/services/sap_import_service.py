@@ -379,7 +379,8 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
                     )
                     if any_changed:
                         for k, v in data.items():
-                            setattr(order, k, v)
+                            if v is not None:
+                                setattr(order, k, v)
                         updated += 1
                     else:
                         identical += 1
@@ -388,6 +389,10 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
                     db.add(order)
                     db.flush()
                     inserted += 1
+
+                # Se l'offerta collegata esiste in DB ma è ancora "Offerta Mandata", aggiornala a vinta
+                if opportunity and opportunity.stage == STAGE_OFFERTA:
+                    opportunity.stage = STAGE_VINTO
 
                 db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
                 for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
