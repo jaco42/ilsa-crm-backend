@@ -4,7 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.auth import get_current_user
+from app.auth import get_current_user, require_admin
 from app.models.contact import Contact
 from app.models.company import Company, CompanyStatus, CompanyOrigin
 from app.models.note import Note
@@ -575,3 +575,37 @@ def _collect_notes(db, note_entries_cfg, row, contact_id, company, created_by, n
             )
             db.add(n)
             note_objects.append(n)
+
+
+# ---------------------------------------------------------------------------
+# SAP import — solo admin
+# ---------------------------------------------------------------------------
+
+@router.post("/sap", dependencies=[Depends(require_admin)])
+async def import_sap(
+    kna1: UploadFile = File(...),
+    vbak: UploadFile = File(...),
+    vbap: UploadFile = File(...),
+    vbfa: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        from app.services.sap_import_service import load_csv_bytes, run_import_core
+    except ImportError:
+        raise HTTPException(status_code=500, detail="pandas non installato sul server")
+
+    try:
+        clienti   = load_csv_bytes(await kna1.read())
+        docvend   = load_csv_bytes(await vbak.read())
+        posizioni = load_csv_bytes(await vbap.read())
+        flusso    = load_csv_bytes(await vbfa.read())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
+
+    try:
+        stats = run_import_core(clienti, docvend, posizioni, flusso, db)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Errore import: {e}")
+
+    return {"ok": True, "stats": stats}

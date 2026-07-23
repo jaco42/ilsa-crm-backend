@@ -46,3 +46,10 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Utente non trovato")
     return user
+
+
+def require_admin(current_user=Depends(get_current_user)):
+    from app.models.user import RuoloUtente
+    if current_user.ruolo != RuoloUtente.admin:
+        raise HTTPException(status_code=403, detail="Accesso riservato agli amministratori")
+    return current_user
