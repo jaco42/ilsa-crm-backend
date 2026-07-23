@@ -693,7 +693,7 @@ async def stream_companies(
                 "import_log_id": str(log.id),
                 "totale_righe": total,
                 "creati": len(created), "aggiornati": len(updated), "saltati": len(skipped),
-                "dettaglio_creati": created, "dettaglio_aggiornati": updated, "dettaglio_saltati": skipped,
+                "dettaglio_saltati": skipped,
             }) + "\n"
         except Exception as e:
             db.rollback()
@@ -701,7 +701,11 @@ async def stream_companies(
         finally:
             db.close()
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 def _append_storico(existing: str | None, nuovo: str) -> str:
@@ -854,4 +858,8 @@ async def import_sap_stream(
         finally:
             db.close()
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
