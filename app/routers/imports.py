@@ -553,6 +553,157 @@ async def run_companies(
     }
 
 
+@router.post("/companies/stream")
+async def stream_companies(
+    file: UploadFile = File(...),
+    mapping: str = Form(""),
+    header_row: int = Form(0),
+    current_user=Depends(get_current_user),
+):
+    import json as _json
+    try:
+        col_map: dict = _json.loads(mapping) if mapping else {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Mapping non valido")
+
+    rs_cfg = col_map.get('ragione_sociale', {})
+    if not [e for e in rs_cfg.get('entries', []) if e.get('col')]:
+        raise HTTPException(status_code=400, detail="Devi mappare il campo 'Ragione sociale'")
+
+    content = await file.read()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext == "xlsx":
+        _, rows = _parse_xlsx_with_header(content, header_row)
+    else:
+        _, rows = _parse_csv(content)
+
+    username = current_user.nome
+
+    def generate():
+        from app.database import SessionLocal
+        db = SessionLocal()
+        created, updated, skipped = [], [], []
+        created_objects, updated_snapshots, note_objects = [], [], []
+        nota_pinned = col_map.get('nota_pinned', False)
+        total = len(rows)
+
+        try:
+            for i, row in enumerate(rows):
+                line = i + 2
+                ragione_sociale = _get_val(row, col_map.get('ragione_sociale', {}))
+                if not ragione_sociale:
+                    skipped.append({"riga": line, "motivo": "Ragione sociale vuota"})
+                else:
+                    partita_iva = _get_val(row, col_map.get('partita_iva', {}))
+                    indirizzo = _get_val(row, col_map.get('indirizzo', {}))
+                    citta = _get_val(row, col_map.get('citta', {}))
+                    cap = _get_val(row, col_map.get('cap', {}))
+                    provincia, prov_ok = _normalize_2l(_get_val(row, col_map.get('provincia', {})), _PROVINCIA_MAP)
+                    paese, paese_ok = _normalize_2l(_get_val(row, col_map.get('paese', {})), _PAESE_MAP)
+
+                    if not prov_ok:
+                        skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Provincia non riconosciuta: '{provincia}'"})
+                    elif not paese_ok:
+                        skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Paese non riconosciuto: '{paese}'"})
+                    else:
+                        telefono = _get_val(row, col_map.get('telefono', {}))
+                        email = _get_val(row, col_map.get('email', {}))
+                        tipo_attivita = _get_val(row, col_map.get('tipo_attivita', {}))
+                        storico_contatti = _get_val(row, col_map.get('storico_contatti', {}))
+                        nota = _get_val(row, col_map.get('nota', {}))
+                        fields_nuovo = {
+                            "ragione_sociale": ragione_sociale, "partita_iva": partita_iva,
+                            "indirizzo": indirizzo, "citta": citta, "cap": cap,
+                            "provincia": provincia, "paese": paese, "telefono": telefono,
+                            "email": email, "tipo_attivita": tipo_attivita,
+                            "storico_contatti": storico_contatti,
+                        }
+                        existing = None
+                        if partita_iva:
+                            existing = db.query(Company).filter(Company.partita_iva == partita_iva).first()
+                        if not existing:
+                            existing = db.query(Company).filter(Company.ragione_sociale.ilike(ragione_sociale)).first()
+
+                        if existing:
+                            storico_merged = _append_storico(existing.storico_contatti, storico_contatti) if storico_contatti else existing.storico_contatti
+                            fields_attuale = {
+                                "ragione_sociale": existing.ragione_sociale, "partita_iva": existing.partita_iva,
+                                "indirizzo": existing.indirizzo, "citta": existing.citta, "cap": existing.cap,
+                                "provincia": existing.provincia, "paese": existing.paese, "telefono": existing.telefono,
+                                "email": existing.email, "tipo_attivita": existing.tipo_attivita,
+                                "storico_contatti": existing.storico_contatti,
+                            }
+                            fields_nuovo["storico_contatti"] = storico_merged
+                            has_changes = fields_attuale != fields_nuovo or bool(nota)
+                            if not has_changes:
+                                skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": "Nessuna modifica"})
+                            else:
+                                before = _snap(existing, _COMPANY_SNAP_FIELDS)
+                                existing.ragione_sociale = ragione_sociale
+                                if partita_iva: existing.partita_iva = partita_iva
+                                if indirizzo: existing.indirizzo = indirizzo
+                                if citta: existing.citta = citta
+                                if cap: existing.cap = cap
+                                if provincia: existing.provincia = provincia
+                                if paese: existing.paese = paese
+                                if telefono: existing.telefono = telefono
+                                if email: existing.email = email
+                                if tipo_attivita: existing.tipo_attivita = tipo_attivita
+                                if storico_contatti: existing.storico_contatti = storico_merged
+                                existing.created_by = username
+                                after = _snap(existing, _COMPANY_SNAP_FIELDS)
+                                updated_snapshots.append({"id": str(existing.id), "ragione_sociale": ragione_sociale, "before": before, "after": after})
+                                if nota:
+                                    n = Note(company_id=existing.id, testo=nota, pinned=nota_pinned, created_by=username)
+                                    db.add(n); note_objects.append(n)
+                                updated.append({"riga": line, "attuale": fields_attuale, "nuovo": fields_nuovo})
+                        else:
+                            company = Company(
+                                ragione_sociale=ragione_sociale, partita_iva=partita_iva,
+                                indirizzo=indirizzo, citta=citta, cap=cap, provincia=provincia,
+                                paese=paese, telefono=telefono, email=email,
+                                tipo_attivita=tipo_attivita, storico_contatti=storico_contatti,
+                                status=CompanyStatus.prospect, origin=CompanyOrigin.crm_manual,
+                                created_by=username,
+                            )
+                            db.add(company); created_objects.append(company)
+                            if nota:
+                                n = Note(company_id=company.id, testo=nota, pinned=nota_pinned, created_by=username)
+                                db.add(n); note_objects.append(n)
+                            created.append({"riga": line, **fields_nuovo})
+
+                if (i + 1) % 100 == 0 or i == total - 1:
+                    pct = int((i + 1) / max(total, 1) * 90)
+                    yield _json.dumps({"type": "progress", "pct": pct, "creati": len(created), "aggiornati": len(updated), "saltati": len(skipped)}) + "\n"
+
+            db.flush()
+            log = ImportLog(
+                tipo="aziende", created_by=username,
+                creati=len(created), aggiornati=len(updated), saltati=len(skipped),
+                dettaglio_saltati=skipped,
+                created_ids=[str(c.id) for c in created_objects],
+                updated_snapshots=updated_snapshots,
+                note_ids=[str(n.id) for n in note_objects],
+            )
+            db.add(log)
+            db.commit()
+            db.refresh(log)
+            yield _json.dumps({
+                "type": "done",
+                "import_log_id": str(log.id),
+                "totale_righe": total,
+                "creati": len(created), "aggiornati": len(updated), "saltati": len(skipped),
+                "dettaglio_creati": created, "dettaglio_aggiornati": updated, "dettaglio_saltati": skipped,
+            }) + "\n"
+        except Exception as e:
+            db.rollback()
+            yield _json.dumps({"type": "error", "message": str(e)}) + "\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
 def _append_storico(existing: str | None, nuovo: str) -> str:
     if not existing:
         return nuovo
