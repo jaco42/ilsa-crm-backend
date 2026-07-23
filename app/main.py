@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth
+from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth, imports, import_log, feedback
 
 app = FastAPI(title="ILSA CRM API", version="1.0.0")
 
@@ -28,6 +28,9 @@ app.include_router(orders.router)
 app.include_router(reminders.router)
 app.include_router(radar.router)
 app.include_router(dedup.router)
+app.include_router(imports.router)
+app.include_router(import_log.router)
+app.include_router(feedback.router)
 
 
 @app.get("/health")

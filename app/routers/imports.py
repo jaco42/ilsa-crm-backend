@@ -1,0 +1,577 @@
+import csv
+import io
+import uuid
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.auth import get_current_user
+from app.models.contact import Contact
+from app.models.company import Company, CompanyStatus, CompanyOrigin
+from app.models.note import Note
+from app.models.import_log import ImportLog
+
+router = APIRouter(prefix="/import", tags=["import"], dependencies=[Depends(get_current_user)])
+
+CONTACT_FIELDS = [
+    {"key": "nome",        "label": "Nome"},
+    {"key": "company",     "label": "Azienda (ragione sociale)"},
+    {"key": "ruolo",       "label": "Ruolo"},
+    {"key": "email",       "label": "Email"},
+    {"key": "telefono",    "label": "Telefono"},
+    {"key": "note",              "label": "Note contatto"},
+    {"key": "storico_contatti",  "label": "Storico contatti"},
+]
+
+COMPANY_FIELDS = [
+    {"key": "ragione_sociale", "label": "Ragione sociale"},
+    {"key": "partita_iva",     "label": "Partita IVA"},
+    {"key": "indirizzo",       "label": "Indirizzo"},
+    {"key": "citta",           "label": "Città"},
+    {"key": "cap",             "label": "CAP"},
+    {"key": "provincia",       "label": "Provincia"},
+    {"key": "paese",           "label": "Paese"},
+    {"key": "telefono",        "label": "Telefono"},
+    {"key": "email",           "label": "Email"},
+    {"key": "tipo_attivita",   "label": "Tipo attività"},
+    {"key": "storico_contatti", "label": "Storico contatti"},
+    {"key": "nota",             "label": "Nota"},
+]
+
+_COMPANY_SNAP_FIELDS = [
+    "ragione_sociale", "partita_iva", "indirizzo", "citta", "cap",
+    "provincia", "paese", "telefono", "email", "tipo_attivita", "storico_contatti",
+]
+_CONTACT_SNAP_FIELDS = [
+    "nome", "ruolo", "email", "telefono", "storico_contatti",
+]
+
+
+_PAESE_MAP = {
+    "italia": "IT", "italy": "IT", "italie": "IT",
+    "germania": "DE", "germany": "DE", "deutschland": "DE",
+    "francia": "FR", "france": "FR",
+    "spagna": "ES", "spain": "ES", "españa": "ES",
+    "svizzera": "CH", "switzerland": "CH", "schweiz": "CH",
+    "austria": "AT", "oesterreich": "AT", "österreich": "AT",
+    "belgio": "BE", "belgium": "BE", "belgique": "BE",
+    "paesi bassi": "NL", "olanda": "NL", "netherlands": "NL",
+    "portogallo": "PT", "portugal": "PT",
+    "regno unito": "GB", "uk": "GB", "great britain": "GB",
+    "stati uniti": "US", "usa": "US", "united states": "US",
+    "cina": "CN", "china": "CN",
+    "giappone": "JP", "japan": "JP",
+    "polonia": "PL", "poland": "PL",
+    "repubblica ceca": "CZ", "czech republic": "CZ",
+    "slovacchia": "SK", "slovakia": "SK",
+    "ungheria": "HU", "hungary": "HU",
+    "romania": "RO",
+    "croazia": "HR", "croatia": "HR",
+    "slovenia": "SI",
+    "grecia": "GR", "greece": "GR",
+    "turchia": "TR", "turkey": "TR",
+    "russia": "RU",
+    "brasile": "BR", "brazil": "BR",
+    "messico": "MX", "mexico": "MX",
+    "canada": "CA",
+    "australia": "AU",
+    "india": "IN",
+}
+
+_PROVINCIA_MAP = {
+    "agrigento": "AG", "alessandria": "AL", "ancona": "AN", "aosta": "AO",
+    "arezzo": "AR", "ascoli piceno": "AP", "asti": "AT", "avellino": "AV",
+    "bari": "BA", "barletta": "BT", "belluno": "BL", "benevento": "BN",
+    "bergamo": "BG", "biella": "BI", "bologna": "BO", "bolzano": "BZ",
+    "brescia": "BS", "brindisi": "BR", "cagliari": "CA", "caltanissetta": "CL",
+    "campobasso": "CB", "caserta": "CE", "catania": "CT", "catanzaro": "CZ",
+    "chieti": "CH", "como": "CO", "cosenza": "CS", "cremona": "CR",
+    "crotone": "KR", "cuneo": "CN", "enna": "EN", "fermo": "FM",
+    "ferrara": "FE", "firenze": "FI", "foggia": "FG", "forlì": "FC",
+    "forli": "FC", "frosinone": "FR", "genova": "GE", "gorizia": "GO",
+    "grosseto": "GR", "imperia": "IM", "isernia": "IS", "la spezia": "SP",
+    "l'aquila": "AQ", "aquila": "AQ", "latina": "LT", "lecce": "LE",
+    "lecco": "LC", "livorno": "LI", "lodi": "LO", "lucca": "LU",
+    "macerata": "MC", "mantova": "MN", "massa": "MS", "matera": "MT",
+    "messina": "ME", "milano": "MI", "modena": "MO", "monza": "MB",
+    "napoli": "NA", "novara": "NO", "nuoro": "NU", "oristano": "OR",
+    "padova": "PD", "palermo": "PA", "parma": "PR", "pavia": "PV",
+    "perugia": "PG", "pesaro": "PU", "pescara": "PE", "piacenza": "PC",
+    "pisa": "PI", "pistoia": "PT", "pordenone": "PN", "potenza": "PZ",
+    "prato": "PO", "ragusa": "RG", "ravenna": "RA", "reggio calabria": "RC",
+    "reggio emilia": "RE", "rieti": "RI", "rimini": "RN", "roma": "RM",
+    "rovigo": "RO", "salerno": "SA", "sassari": "SS", "savona": "SV",
+    "siena": "SI", "siracusa": "SR", "sondrio": "SO", "sud sardegna": "SU",
+    "taranto": "TA", "teramo": "TE", "terni": "TR", "torino": "TO",
+    "trapani": "TP", "trento": "TN", "treviso": "TV", "trieste": "TS",
+    "udine": "UD", "varese": "VA", "venezia": "VE", "verbania": "VB",
+    "vercelli": "VC", "verona": "VR", "vibo valentia": "VV", "vicenza": "VI",
+    "viterbo": "VT",
+}
+
+
+def _normalize_2l(val: str | None, mapping: dict) -> tuple[str | None, bool]:
+    if not val:
+        return None, True
+    v = val.strip()
+    if len(v) <= 2:
+        return v.upper(), True
+    mapped = mapping.get(v.lower())
+    if mapped:
+        return mapped, True
+    return v, False
+
+
+def _get_val(row: dict, cfg: dict) -> str | None:
+    parts = []
+    for entry in cfg.get('entries', []):
+        val = row.get(entry.get('col', ''), '').strip()
+        if val:
+            parts.append((entry.get('incipit') or '') + val)
+    result = ''.join(parts)
+    return result.upper() if result else None
+
+
+def _load_xlsx_raw(content: bytes) -> list[list[str]]:
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+    raw = []
+    for row in ws.iter_rows(values_only=True):
+        raw.append([str(v).strip() if v is not None else "" for v in row])
+    wb.close()
+    return raw
+
+
+def _parse_xlsx_with_header(content: bytes, header_row: int) -> tuple[list[str], list[dict]]:
+    raw = _load_xlsx_raw(content)
+    if not raw or header_row >= len(raw):
+        raise HTTPException(status_code=400, detail="Riga header non valida")
+    headers = raw[header_row]
+    while headers and not headers[-1]:
+        headers.pop()
+    rows = []
+    for row in raw[header_row + 1:]:
+        if not any(v for v in row):
+            continue
+        rows.append({headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))})
+    return headers, rows
+
+
+def _parse_csv(content: bytes) -> tuple[list[str], list[dict]]:
+    text = None
+    for enc in ("utf-8-sig", "latin-1", "cp1252"):
+        try:
+            text = content.decode(enc)
+            break
+        except Exception:
+            continue
+    sample = text[:2000]
+    delimiter = ";" if sample.count(";") > sample.count(",") else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
+    headers = list(reader.fieldnames or [])
+    rows = [dict(r) for r in reader]
+    return headers, rows
+
+
+def _snap(obj, fields: list[str]) -> dict:
+    return {f: getattr(obj, f) for f in fields}
+
+
+def _snap_serializable(snap: dict) -> dict:
+    """Convert UUID values to strings for JSON serialization."""
+    result = {}
+    for k, v in snap.items():
+        if isinstance(v, uuid.UUID):
+            result[k] = str(v)
+        else:
+            result[k] = v
+    return result
+
+
+@router.post("/preview")
+async def preview(file: UploadFile = File(...), entity: str = "contatti"):
+    content = await file.read()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    fields = COMPANY_FIELDS if entity == "aziende" else CONTACT_FIELDS
+
+    if ext == "xlsx":
+        raw = _load_xlsx_raw(content)
+        if not raw:
+            raise HTTPException(status_code=400, detail="File Excel vuoto")
+        return {
+            "type": "xlsx",
+            "raw_rows": raw,
+            "total_rows": len(raw),
+            "available_fields": fields,
+        }
+    elif ext in ("csv", "txt"):
+        headers, rows = _parse_csv(content)
+        return {
+            "type": "csv",
+            "columns": headers,
+            "preview_rows": rows[:5],
+            "total_rows": len(rows),
+            "available_fields": fields,
+        }
+    else:
+        raise HTTPException(status_code=400, detail="Formato non supportato. Usa CSV o XLSX.")
+
+
+@router.post("/preview-xlsx")
+async def preview_xlsx(file: UploadFile = File(...), header_row: int = 0):
+    content = await file.read()
+    headers, rows = _parse_xlsx_with_header(content, header_row)
+    return {
+        "columns": headers,
+        "preview_rows": rows[:5],
+        "total_rows": len(rows),
+    }
+
+
+@router.post("/contacts/run")
+async def run_contacts(
+    file: UploadFile = File(...),
+    mapping: str = Form(""),
+    dry_run: bool = Form(True),
+    header_row: int = Form(0),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import json
+    try:
+        col_map: dict = json.loads(mapping) if mapping else {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Mapping non valido")
+
+    nome_cfg = col_map.get('nome', {})
+    if not [e for e in nome_cfg.get('entries', []) if e.get('col')]:
+        raise HTTPException(status_code=400, detail="Devi mappare almeno il campo 'nome'")
+    company_cfg = col_map.get('company', {})
+    if not [e for e in company_cfg.get('entries', []) if e.get('col')]:
+        raise HTTPException(status_code=400, detail="Devi mappare il campo 'Azienda'")
+
+    content = await file.read()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext == "xlsx":
+        _, rows = _parse_xlsx_with_header(content, header_row)
+    else:
+        _, rows = _parse_csv(content)
+
+    note_entries_cfg = col_map.get('note_records', [])
+    created, updated, skipped = [], [], []
+    created_objects: list[Contact] = []
+    updated_snapshots: list[dict] = []
+    note_objects: list[Note] = []
+
+    for i, row in enumerate(rows):
+        line = i + 2
+
+        nome = _get_val(row, col_map.get('nome', {}))
+        if not nome:
+            skipped.append({"riga": line, "motivo": "Nome vuoto"})
+            continue
+
+        company_name = _get_val(row, col_map.get('company', {}))
+        company = None
+        if company_name:
+            company = db.query(Company).filter(Company.ragione_sociale.ilike(company_name)).first()
+            if not company:
+                skipped.append({"riga": line, "nome": nome, "motivo": "Azienda non trovata"})
+                continue
+
+        email = _get_val(row, col_map.get('email', {}))
+        ruolo = _get_val(row, col_map.get('ruolo', {}))
+        telefono = _get_val(row, col_map.get('telefono', {}))
+        note = _get_val(row, col_map.get('note', {}))
+        storico_contatti = _get_val(row, col_map.get('storico_contatti', {}))
+
+        existing = None
+        if email:
+            existing = db.query(Contact).filter(Contact.email == email).first()
+        if not existing and company:
+            existing = db.query(Contact).filter(
+                Contact.company_id == company.id,
+                Contact.nome.ilike(nome),
+            ).first()
+
+        if existing:
+            before = _snap_serializable(_snap(existing, _CONTACT_SNAP_FIELDS))
+            if not dry_run:
+                existing.nome = nome
+                if ruolo: existing.ruolo = ruolo
+                if telefono: existing.telefono = telefono
+                if storico_contatti: existing.storico_contatti = _append_storico(existing.storico_contatti, storico_contatti)
+                if company: existing.company_id = company.id
+                existing.created_by = current_user.nome
+                after = _snap_serializable(_snap(existing, _CONTACT_SNAP_FIELDS))
+                updated_snapshots.append({
+                    "id": str(existing.id),
+                    "nome": nome,
+                    "before": before,
+                    "after": after,
+                })
+                if note and company:
+                    n = Note(company_id=company.id, contact_id=existing.id, testo=note, pinned=False, created_by=current_user.nome)
+                    db.add(n)
+                    note_objects.append(n)
+                _collect_notes(db, note_entries_cfg, row, existing.id, company, current_user.nome, note_objects)
+            updated.append({"riga": line, "nome": nome, "email": email})
+        else:
+            if not dry_run:
+                contact = Contact(
+                    nome=nome, email=email, ruolo=ruolo, telefono=telefono,
+                    storico_contatti=storico_contatti,
+                    company_id=company.id if company else None,
+                    created_by=current_user.nome,
+                )
+                db.add(contact)
+                created_objects.append(contact)
+                if note and company:
+                    n = Note(company_id=company.id, contact_id=contact.id, testo=note, pinned=False, created_by=current_user.nome)
+                    db.add(n)
+                    note_objects.append(n)
+                _collect_notes(db, note_entries_cfg, row, contact.id, company, current_user.nome, note_objects)
+            created.append({"riga": line, "nome": nome, "email": email})
+
+    if not dry_run:
+        db.flush()
+        log = ImportLog(
+            tipo="contatti",
+            created_by=current_user.nome,
+            creati=len(created),
+            aggiornati=len(updated),
+            saltati=len(skipped),
+            dettaglio_saltati=skipped,
+            created_ids=[str(c.id) for c in created_objects],
+            updated_snapshots=updated_snapshots,
+            note_ids=[str(n.id) for n in note_objects],
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        import_log_id = str(log.id)
+    else:
+        import_log_id = None
+
+    return {
+        "dry_run": dry_run,
+        "import_log_id": import_log_id,
+        "totale_righe": len(rows),
+        "creati": len(created),
+        "aggiornati": len(updated),
+        "saltati": len(skipped),
+        "dettaglio_creati": created,
+        "dettaglio_aggiornati": updated,
+        "dettaglio_saltati": skipped,
+    }
+
+
+@router.post("/companies/run")
+async def run_companies(
+    file: UploadFile = File(...),
+    mapping: str = Form(""),
+    dry_run: bool = Form(True),
+    header_row: int = Form(0),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import json
+    try:
+        col_map: dict = json.loads(mapping) if mapping else {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Mapping non valido")
+
+    rs_cfg = col_map.get('ragione_sociale', {})
+    if not [e for e in rs_cfg.get('entries', []) if e.get('col')]:
+        raise HTTPException(status_code=400, detail="Devi mappare il campo 'Ragione sociale'")
+
+    content = await file.read()
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext == "xlsx":
+        _, rows = _parse_xlsx_with_header(content, header_row)
+    else:
+        _, rows = _parse_csv(content)
+
+    created, updated, skipped = [], [], []
+    created_objects: list[Company] = []
+    updated_snapshots: list[dict] = []
+    note_objects: list[Note] = []
+
+    for i, row in enumerate(rows):
+        line = i + 2
+
+        ragione_sociale = _get_val(row, col_map.get('ragione_sociale', {}))
+        if not ragione_sociale:
+            skipped.append({"riga": line, "motivo": "Ragione sociale vuota"})
+            continue
+
+        partita_iva = _get_val(row, col_map.get('partita_iva', {}))
+        indirizzo = _get_val(row, col_map.get('indirizzo', {}))
+        citta = _get_val(row, col_map.get('citta', {}))
+        cap = _get_val(row, col_map.get('cap', {}))
+        provincia, prov_ok = _normalize_2l(_get_val(row, col_map.get('provincia', {})), _PROVINCIA_MAP)
+        paese, paese_ok = _normalize_2l(_get_val(row, col_map.get('paese', {})), _PAESE_MAP)
+
+        if not prov_ok:
+            skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Provincia non riconosciuta: '{provincia}'"})
+            continue
+        if not paese_ok:
+            skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Paese non riconosciuto: '{paese}'"})
+            continue
+
+        telefono = _get_val(row, col_map.get('telefono', {}))
+        email = _get_val(row, col_map.get('email', {}))
+        tipo_attivita = _get_val(row, col_map.get('tipo_attivita', {}))
+        storico_contatti = _get_val(row, col_map.get('storico_contatti', {}))
+        nota = _get_val(row, col_map.get('nota', {}))
+        nota_pinned = col_map.get('nota_pinned', False)
+
+        fields_nuovo = {
+            "ragione_sociale": ragione_sociale,
+            "partita_iva": partita_iva,
+            "indirizzo": indirizzo,
+            "citta": citta,
+            "cap": cap,
+            "provincia": provincia,
+            "paese": paese,
+            "telefono": telefono,
+            "email": email,
+            "tipo_attivita": tipo_attivita,
+            "storico_contatti": storico_contatti,
+        }
+
+        existing = None
+        if partita_iva:
+            existing = db.query(Company).filter(Company.partita_iva == partita_iva).first()
+        if not existing:
+            existing = db.query(Company).filter(Company.ragione_sociale.ilike(ragione_sociale)).first()
+
+        if existing:
+            storico_merged = _append_storico(existing.storico_contatti, storico_contatti) if storico_contatti else existing.storico_contatti
+            fields_attuale = {
+                "ragione_sociale": existing.ragione_sociale,
+                "partita_iva": existing.partita_iva,
+                "indirizzo": existing.indirizzo,
+                "citta": existing.citta,
+                "cap": existing.cap,
+                "provincia": existing.provincia,
+                "paese": existing.paese,
+                "telefono": existing.telefono,
+                "email": existing.email,
+                "tipo_attivita": existing.tipo_attivita,
+                "storico_contatti": existing.storico_contatti,
+            }
+            fields_nuovo["storico_contatti"] = storico_merged
+            has_changes = fields_attuale != fields_nuovo or bool(nota)
+            if not has_changes:
+                skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": "Nessuna modifica rispetto al record attuale"})
+                continue
+            if not dry_run:
+                before = _snap(existing, _COMPANY_SNAP_FIELDS)
+                existing.ragione_sociale = ragione_sociale
+                if partita_iva: existing.partita_iva = partita_iva
+                if indirizzo: existing.indirizzo = indirizzo
+                if citta: existing.citta = citta
+                if cap: existing.cap = cap
+                if provincia: existing.provincia = provincia
+                if paese: existing.paese = paese
+                if telefono: existing.telefono = telefono
+                if email: existing.email = email
+                if tipo_attivita: existing.tipo_attivita = tipo_attivita
+                if storico_contatti: existing.storico_contatti = storico_merged
+                existing.created_by = current_user.nome
+                after = _snap(existing, _COMPANY_SNAP_FIELDS)
+                updated_snapshots.append({
+                    "id": str(existing.id),
+                    "ragione_sociale": ragione_sociale,
+                    "before": before,
+                    "after": after,
+                })
+                if nota:
+                    n = Note(company_id=existing.id, testo=nota, pinned=nota_pinned, created_by=current_user.nome)
+                    db.add(n)
+                    note_objects.append(n)
+            updated.append({"riga": line, "attuale": fields_attuale, "nuovo": fields_nuovo})
+        else:
+            if not dry_run:
+                company = Company(
+                    ragione_sociale=ragione_sociale,
+                    partita_iva=partita_iva,
+                    indirizzo=indirizzo,
+                    citta=citta,
+                    cap=cap,
+                    provincia=provincia,
+                    paese=paese,
+                    telefono=telefono,
+                    email=email,
+                    tipo_attivita=tipo_attivita,
+                    storico_contatti=storico_contatti,
+                    status=CompanyStatus.prospect,
+                    origin=CompanyOrigin.crm_manual,
+                    created_by=current_user.nome,
+                )
+                db.add(company)
+                created_objects.append(company)
+                if nota:
+                    n = Note(company_id=company.id, testo=nota, pinned=nota_pinned, created_by=current_user.nome)
+                    db.add(n)
+                    note_objects.append(n)
+            created.append({"riga": line, **fields_nuovo})
+
+    if not dry_run:
+        db.flush()
+        log = ImportLog(
+            tipo="aziende",
+            created_by=current_user.nome,
+            creati=len(created),
+            aggiornati=len(updated),
+            saltati=len(skipped),
+            dettaglio_saltati=skipped,
+            created_ids=[str(c.id) for c in created_objects],
+            updated_snapshots=updated_snapshots,
+            note_ids=[str(n.id) for n in note_objects],
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        import_log_id = str(log.id)
+    else:
+        import_log_id = None
+
+    return {
+        "dry_run": dry_run,
+        "import_log_id": import_log_id,
+        "totale_righe": len(rows),
+        "creati": len(created),
+        "aggiornati": len(updated),
+        "saltati": len(skipped),
+        "dettaglio_creati": created,
+        "dettaglio_aggiornati": updated,
+        "dettaglio_saltati": skipped,
+    }
+
+
+def _append_storico(existing: str | None, nuovo: str) -> str:
+    if not existing:
+        return nuovo
+    parts = [p.strip() for p in existing.split('·')]
+    if nuovo.strip() not in parts:
+        parts.append(nuovo.strip())
+    return ' · '.join(parts)
+
+
+def _collect_notes(db, note_entries_cfg, row, contact_id, company, created_by, note_objects: list):
+    if not note_entries_cfg or not company:
+        return
+    for entry in note_entries_cfg:
+        text = _get_val(row, entry)
+        if text:
+            n = Note(
+                company_id=company.id,
+                contact_id=contact_id,
+                testo=text,
+                pinned=entry.get('pinned', False),
+                created_by=created_by,
+            )
+            db.add(n)
+            note_objects.append(n)

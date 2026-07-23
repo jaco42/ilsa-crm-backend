@@ -56,7 +56,7 @@ STAGE_OFFERTA = "Offerta Mandata"
 # ---------------------------------------------------------------------------
 
 def load_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, sep=SEP, dtype=str, encoding=ENCODING, skiprows=3, skipinitialspace=True, on_bad_lines='skip')
+    df = pd.read_csv(path, sep=SEP, dtype=str, encoding=ENCODING, skiprows=3, skipinitialspace=True, on_bad_lines='skip', quoting=3)
     df.columns = df.columns.str.strip().str.strip("|")
     for col in df.columns:
         s = df[col]
@@ -163,10 +163,29 @@ def import_companies(clienti: pd.DataFrame, db):
         if not company:
             secondary = db.query(CompanySapId).filter(CompanySapId.sap_customer_id == codice_cliente).first()
             if secondary:
-                company = secondary.company
+                # Codice assorbito da un merge: riempi solo i campi ancora vuoti sul survivor
+                s = secondary.company
+                fill_fields = ["partita_iva", "indirizzo", "citta", "cap", "provincia", "paese", "tipo_attivita", "sap_created_at"]
+                if not s.telefono_override:
+                    fill_fields.append("telefono")
+                if not s.email_override:
+                    fill_fields.append("email")
+                changed = [f for f in fill_fields if not getattr(s, f) and data.get(f)]
+                for f in changed:
+                    setattr(s, f, data[f])
+                if changed:
+                    log.info(f"Arricchito '{s.ragione_sociale}' da {codice_cliente} ({ragione_sociale}): {changed}")
+                    updated += 1
+                else:
+                    log.info(f"Skip '{ragione_sociale}' ({codice_cliente}): assorbita in '{s.ragione_sociale}', nessun campo nuovo")
+                    skipped += 1
+                continue
         if company:
             if company.telefono_override:
                 data.pop("telefono", None)
+            # Non retrocedere mai da cliente a prospect
+            if company.status == CompanyStatus.cliente and data.get("status") == CompanyStatus.prospect:
+                data.pop("status", None)
             for k, v in data.items():
                 setattr(company, k, v)
             updated += 1

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models.contact import Contact
 from app.models.company import Company
+from app.models.note import Note
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/contacts", tags=["contacts"], dependencies=[Depends(get_current_user)])
@@ -15,7 +16,7 @@ def lista_contatti(
     azienda: str | None = None,
     ruolo: str | None = None,
     paese: str | None = None,
-    provenienza: str | None = None,
+    storico_contatti: str | None = None,
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -34,8 +35,8 @@ def lista_contatti(
         query = query.filter(Contact.ruolo == ruolo)
     if paese:
         query = query.filter(Company.paese == paese)
-    if provenienza:
-        query = query.filter(Contact.provenienza.ilike(f"%{provenienza}%"))
+    if storico_contatti:
+        query = query.filter(Contact.storico_contatti.ilike(f"%{storico_contatti}%"))
     query = query.order_by(Contact.nome)
     # When filtering by company, return all (used in AccountDetail/QuickCreate dropdowns)
     if company_id:
@@ -76,6 +77,43 @@ def aggiorna_contatto(contact_id: str, data: dict, db: Session = Depends(get_db)
     return _serialize(contact)
 
 
+@router.post("/merge")
+def merge_contatti(data: dict, db: Session = Depends(get_db)):
+    survivor_id = data.get("survivor_id")
+    duplicate_ids = data.get("duplicate_ids", [])
+    if not survivor_id or not duplicate_ids:
+        raise HTTPException(status_code=400, detail="IDs non validi")
+
+    survivor = db.query(Contact).options(joinedload(Contact.company)).filter(Contact.id == survivor_id).first()
+    if not survivor:
+        raise HTTPException(status_code=404, detail="Contatto survivor non trovato")
+
+    for dup_id in duplicate_ids:
+        if dup_id == survivor_id:
+            continue
+        duplicate = db.query(Contact).filter(Contact.id == dup_id).first()
+        if not duplicate:
+            continue
+        for field in ("ruolo", "telefono", "email", "note"):
+            if not getattr(survivor, field):
+                val = getattr(duplicate, field)
+                if val:
+                    setattr(survivor, field, val)
+        if duplicate.storico_contatti:
+            survivor.storico_contatti = _append_storico(survivor.storico_contatti, duplicate.storico_contatti)
+        if duplicate.is_primary:
+            survivor.is_primary = True
+        db.query(Note).filter(Note.contact_id == duplicate.id).update({"contact_id": survivor.id}, synchronize_session="fetch")
+        db.flush()  # invia UPDATE a Postgres prima della DELETE per evitare ON DELETE SET NULL
+        db.delete(duplicate)
+        db.flush()  # invia DELETE dopo che le note sono già state riassegnate
+
+    db.commit()
+    db.refresh(survivor)
+    db.refresh(survivor, ["company"])
+    return _serialize(survivor)
+
+
 @router.delete("/{contact_id}", status_code=204)
 def elimina_contatto(contact_id: str, db: Session = Depends(get_db)):
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
@@ -83,6 +121,16 @@ def elimina_contatto(contact_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Contatto non trovato")
     db.delete(contact)
     db.commit()
+
+
+def _append_storico(existing: str | None, nuovo: str) -> str:
+    if not existing:
+        return nuovo
+    parts = [p.strip() for p in existing.split('·')]
+    for p in [p.strip() for p in nuovo.split('·')]:
+        if p and p not in parts:
+            parts.append(p)
+    return ' · '.join(parts)
 
 
 def _serialize(c: Contact):
@@ -96,7 +144,7 @@ def _serialize(c: Contact):
         "email": c.email,
         "telefono": c.telefono,
         "is_primary": c.is_primary,
-        "provenienza": c.provenienza,
+        "storico_contatti": c.storico_contatti,
         "note": c.note,
         "created_by": c.created_by,
         "created_at": c.created_at.isoformat(),

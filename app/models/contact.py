@@ -15,7 +15,7 @@ class Contact(Base):
     telefono = Column(String, nullable=True)
     email = Column(String, nullable=True)
     is_primary = Column(Boolean, default=False, nullable=False)
-    provenienza = Column(String, nullable=True)
+    storico_contatti = Column(String, nullable=True)
     note = Column(Text, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
