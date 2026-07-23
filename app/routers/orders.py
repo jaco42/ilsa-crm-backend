@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
+from app.models.company import Company
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
@@ -63,6 +64,7 @@ def lista_ordini(
     al: date = Query(None),
     valore_min: float = Query(None),
     valore_max: float = Query(None),
+    search: str = Query(None),
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -71,6 +73,12 @@ def lista_ordini(
     if company_id:
         q = q.filter(Order.company_id == company_id)
     q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max)
+    if search:
+        q = q.join(Company, Order.company_id == Company.id, isouter=True)
+        q = q.filter(
+            Order.sap_document_id.ilike(f"%{search}%") |
+            Company.ragione_sociale.ilike(f"%{search}%")
+        )
     total = q.count()
     orders = q.order_by(Order.data_ordine.desc()).offset(offset).limit(limit).all()
 

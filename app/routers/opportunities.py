@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models.opportunity import Opportunity
 from app.models.offer_line_item import OfferLineItem
 from app.models.order import Order
+from app.models.company import Company
 from app.auth import get_current_user
 from app.services import funnel_service
 
@@ -105,6 +106,7 @@ def lista_opportunity(
     valore_max: float = Query(None),
     creazione_dal: date = Query(None),
     creazione_al: date = Query(None),
+    search: str = Query(None),
     limit: int = Query(100),
     offset: int = Query(0),
 ):
@@ -113,6 +115,12 @@ def lista_opportunity(
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al)
+    if search:
+        q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
+        q = q.filter(
+            Opportunity.sap_document_id.ilike(f"%{search}%") |
+            Company.ragione_sociale.ilike(f"%{search}%")
+        )
     if stato == 'vinta':
         q = q.filter(Opportunity.stage == 'Chiuso Vinto')
     elif stato == 'persa':
