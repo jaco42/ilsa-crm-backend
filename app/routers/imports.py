@@ -1,7 +1,9 @@
 import csv
 import io
+import json
 import uuid
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.auth import get_current_user, require_admin
@@ -609,3 +611,96 @@ async def import_sap(
         raise HTTPException(status_code=500, detail=f"Errore import: {e}")
 
     return {"ok": True, "stats": stats}
+
+
+@router.post("/sap/stream", dependencies=[Depends(require_admin)])
+async def import_sap_stream(
+    kna1: UploadFile = File(...),
+    vbak: UploadFile = File(...),
+    vbap: UploadFile = File(...),
+    vbfa: UploadFile = File(...),
+):
+    try:
+        import pandas as _pd; del _pd  # check pandas is available
+    except ImportError:
+        raise HTTPException(status_code=500, detail="pandas non installato sul server")
+
+    try:
+        kna1_bytes = await kna1.read()
+        vbak_bytes = await vbak.read()
+        vbap_bytes = await vbap.read()
+        vbfa_bytes = await vbfa.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
+
+    def generate():
+        from app.database import SessionLocal
+        from app.services.sap_import_service import (
+            load_csv_bytes, import_companies_stream, import_prodotti_stream,
+            import_offerte_stream, import_ordini_stream,
+        )
+        db = SessionLocal()
+        try:
+            yield json.dumps({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."}) + "\n"
+
+            clienti   = load_csv_bytes(kna1_bytes)
+            docvend   = load_csv_bytes(vbak_bytes)
+            posizioni = load_csv_bytes(vbap_bytes)
+            flusso    = load_csv_bytes(vbfa_bytes)
+
+            offerte_df         = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
+            ordini_df          = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
+            offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
+            offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
+
+            yield json.dumps({
+                "type": "progress", "pct": 12,
+                "fase": f"File letti — VBAK: {len(offerte_df)} offerte (5xxxxx) + {len(ordini_df)} ordini (1xxxxx)",
+            }) + "\n"
+
+            _zero = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": 0, "processed": 0}
+
+            # Companies 15% → 45%
+            companies_stats = dict(_zero)
+            for partial in import_companies_stream(clienti, db):
+                pct = 15 + int((partial["processed"] / max(partial["total"], 1)) * 30)
+                yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo aziende...", "stats": {"companies": partial}}) + "\n"
+                companies_stats = partial
+
+            # Prodotti 45% → 60%
+            prodotti_stats = dict(_zero)
+            for partial in import_prodotti_stream(posizioni, db):
+                pct = 45 + int((partial["processed"] / max(partial["total"], 1)) * 15)
+                yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo prodotti...", "stats": {"companies": companies_stats, "prodotti": partial}}) + "\n"
+                prodotti_stats = partial
+
+            # Offerte 60% → 80%
+            offerte_stats = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": len(offerte_df), "processed": len(offerte_df)}
+            if len(offerte_df) > 0:
+                for partial in import_offerte_stream(offerte_df, posizioni, offerte_vinte, db):
+                    pct = 60 + int((partial["processed"] / max(partial["total"], 1)) * 20)
+                    yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo offerte...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": partial}}) + "\n"
+                    offerte_stats = partial
+            else:
+                yield json.dumps({"type": "progress", "pct": 80, "fase": "Offerte: 0 righe nel VBAK con prefisso 5xxxxx", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats}}) + "\n"
+
+            # Ordini 80% → 99%
+            ordini_stats = dict(_zero)
+            for partial in import_ordini_stream(ordini_df, posizioni, offerta_per_ordine, db):
+                pct = 80 + int((partial["processed"] / max(partial["total"], 1)) * 19)
+                yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}}) + "\n"
+                ordini_stats = partial
+
+            yield json.dumps({"type": "done", "pct": 100, "stats": {
+                "companies": companies_stats,
+                "prodotti":  prodotti_stats,
+                "offerte":   offerte_stats,
+                "ordini":    ordini_stats,
+            }}) + "\n"
+        except Exception as e:
+            db.rollback()
+            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")

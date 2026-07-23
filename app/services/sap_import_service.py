@@ -97,239 +97,334 @@ def _build_companies_lookup(db) -> dict:
     return lookup
 
 
-def import_companies(clienti: pd.DataFrame, db: Session) -> dict:
-    inserted = updated = skipped = 0
+def _changed(obj, field: str, new_val) -> bool:
+    if new_val is None:
+        return False
+    current = getattr(obj, field, None)
+    if current is None:
+        return True
+    return str(current) != str(new_val)
 
-    for _, row in clienti.iterrows():
+
+# ---------------------------------------------------------------------------
+# Companies
+# ---------------------------------------------------------------------------
+
+def import_companies_stream(clienti: pd.DataFrame, db: Session):
+    """Generator: yields partial stats every ~200 rows."""
+    inserted = updated = identical = skipped = 0
+    total = len(clienti)
+
+    for i, (_, row) in enumerate(clienti.iterrows()):
         codice_cliente = get(row, "Cliente")
         if not codice_cliente:
             skipped += 1
-            continue
-
-        tipo = classify_customer_code(codice_cliente)
-        if tipo in ("dest_merci", "skip"):
-            skipped += 1
-            continue
-
-        nome1 = get(row, "Nome 1")
-        nome2 = get(row, "Nome 2")
-        ragione_sociale = f"{nome1} {nome2}".strip() if nome2 else nome1
-        if not ragione_sociale:
-            ragione_sociale = f"Cliente SAP {codice_cliente}"
-
-        piva = get(row, "Partita IVA 1", "Part.IVA", "Partita IVA") or None
-
-        data = {
-            "sap_customer_id": codice_cliente,
-            "ragione_sociale": ragione_sociale,
-            "indirizzo": get(row, "Via") or None,
-            "citta": get(row, "Località", "Localit?") or None,
-            "cap": get(row, "CAP") or None,
-            "provincia": get(row, "Rg") or None,
-            "paese": get(row, "Pse") or None,
-            "telefono": get(row, "Telefono 1") or None,
-            "partita_iva": piva,
-            "sap_created_at": parse_date(get(row, "Data ap.")),
-            "status": CompanyStatus.cliente if tipo == "cliente" else CompanyStatus.prospect,
-            "origin": CompanyOrigin.sap_sync,
-            "created_by": "SAP",
-        }
-
-        company = db.query(Company).filter(Company.sap_customer_id == codice_cliente).first()
-        if not company:
-            secondary = db.query(CompanySapId).filter(CompanySapId.sap_customer_id == codice_cliente).first()
-            if secondary:
-                s = secondary.company
-                fill_fields = ["partita_iva", "indirizzo", "citta", "cap", "provincia", "paese", "tipo_attivita", "sap_created_at"]
-                if not s.telefono_override:
-                    fill_fields.append("telefono")
-                if not s.email_override:
-                    fill_fields.append("email")
-                changed = [f for f in fill_fields if not getattr(s, f) and data.get(f)]
-                for f in changed:
-                    setattr(s, f, data[f])
-                if changed:
-                    updated += 1
-                else:
-                    skipped += 1
-                continue
-
-        if company:
-            if company.telefono_override:
-                data.pop("telefono", None)
-            if company.status == CompanyStatus.cliente and data.get("status") == CompanyStatus.prospect:
-                data.pop("status", None)
-            for k, v in data.items():
-                setattr(company, k, v)
-            updated += 1
         else:
-            handled, match = find_and_handle_duplicate(data, db)
-            if handled:
-                updated += 1
+            tipo = classify_customer_code(codice_cliente)
+            if tipo in ("dest_merci", "skip"):
+                skipped += 1
             else:
-                new_company = Company(**data)
-                db.add(new_company)
-                db.flush()
-                inserted += 1
-                if match is not None:
-                    reason, s_nome, s_via = score_match(match, new_company)
-                    db.add(DeduplicaAlert(
-                        company_a_id=match.id,
-                        company_b_id=new_company.id,
-                        reason=reason or "alert_simile",
-                        score_nome=s_nome,
-                        score_via=s_via if s_via else None,
-                    ))
+                nome1 = get(row, "Nome 1")
+                nome2 = get(row, "Nome 2")
+                ragione_sociale = f"{nome1} {nome2}".strip() if nome2 else nome1
+                if not ragione_sociale:
+                    ragione_sociale = f"Cliente SAP {codice_cliente}"
+
+                piva = get(row, "Partita IVA 1", "Part.IVA", "Partita IVA") or None
+                data = {
+                    "sap_customer_id": codice_cliente,
+                    "ragione_sociale": ragione_sociale,
+                    "indirizzo": get(row, "Via") or None,
+                    "citta": get(row, "Località", "Localit?") or None,
+                    "cap": get(row, "CAP") or None,
+                    "provincia": get(row, "Rg") or None,
+                    "paese": get(row, "Pse") or None,
+                    "telefono": get(row, "Telefono 1") or None,
+                    "partita_iva": piva,
+                    "sap_created_at": parse_date(get(row, "Data ap.")),
+                    "status": CompanyStatus.cliente if tipo == "cliente" else CompanyStatus.prospect,
+                    "origin": CompanyOrigin.sap_sync,
+                    "created_by": "SAP",
+                }
+
+                company = db.query(Company).filter(Company.sap_customer_id == codice_cliente).first()
+                row_handled = False
+
+                if not company:
+                    secondary = db.query(CompanySapId).filter(CompanySapId.sap_customer_id == codice_cliente).first()
+                    if secondary:
+                        s = secondary.company
+                        fill_fields = ["partita_iva", "indirizzo", "citta", "cap", "provincia", "paese", "tipo_attivita", "sap_created_at"]
+                        if not s.telefono_override:
+                            fill_fields.append("telefono")
+                        if not s.email_override:
+                            fill_fields.append("email")
+                        changed_fields = [f for f in fill_fields if not getattr(s, f) and data.get(f)]
+                        for f in changed_fields:
+                            setattr(s, f, data[f])
+                        if changed_fields:
+                            updated += 1
+                        else:
+                            identical += 1
+                        row_handled = True
+
+                if not row_handled:
+                    if company:
+                        if company.telefono_override:
+                            data.pop("telefono", None)
+                        if company.status == CompanyStatus.cliente and data.get("status") == CompanyStatus.prospect:
+                            data.pop("status", None)
+                        any_changed = any(
+                            _changed(company, k, v)
+                            for k, v in data.items() if v is not None and hasattr(company, k)
+                        )
+                        if any_changed:
+                            for k, v in data.items():
+                                setattr(company, k, v)
+                            updated += 1
+                        else:
+                            identical += 1
+                    else:
+                        handled, match = find_and_handle_duplicate(data, db)
+                        if handled:
+                            updated += 1
+                        else:
+                            new_company = Company(**data)
+                            db.add(new_company)
+                            db.flush()
+                            inserted += 1
+                            if match is not None:
+                                reason, s_nome, s_via = score_match(match, new_company)
+                                db.add(DeduplicaAlert(
+                                    company_a_id=match.id,
+                                    company_b_id=new_company.id,
+                                    reason=reason or "alert_simile",
+                                    score_nome=s_nome,
+                                    score_via=s_via if s_via else None,
+                                ))
+
+        if (i + 1) % 200 == 0 or i == total - 1:
+            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+                   "processed": i + 1, "total": total}
 
     db.commit()
-    log.info(f"Companies:  {inserted} inserite  |  {updated} aggiornate  |  {skipped} saltate")
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+    log.info(f"Companies:  {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate")
 
 
-def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
-    inserted = updated = 0
+def import_companies(clienti: pd.DataFrame, db: Session) -> dict:
+    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
+    for partial in import_companies_stream(clienti, db):
+        result = partial
+    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
-    for _, row in posizioni.drop_duplicates(subset=["Materiale"]).iterrows():
+
+# ---------------------------------------------------------------------------
+# Prodotti
+# ---------------------------------------------------------------------------
+
+def import_prodotti_stream(posizioni: pd.DataFrame, db: Session):
+    inserted = updated = identical = 0
+    deduped = posizioni.drop_duplicates(subset=["Materiale"])
+    total = len(deduped)
+
+    for i, (_, row) in enumerate(deduped.iterrows()):
         codice = get(row, "Materiale")
         if not codice:
             continue
         nome = get(row, "Definizione") or codice
         prodotto = db.query(Prodotto).filter(Prodotto.codice_sap == codice).first()
         if prodotto:
-            prodotto.nome = nome
-            updated += 1
+            if prodotto.nome != nome:
+                prodotto.nome = nome
+                updated += 1
+            else:
+                identical += 1
         else:
             db.add(Prodotto(codice_sap=codice, nome=nome, attivo=True))
             inserted += 1
 
+        if (i + 1) % 200 == 0 or i == total - 1:
+            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": 0,
+                   "processed": i + 1, "total": total}
+
     db.commit()
-    log.info(f"Prodotti:   {inserted} inseriti  |  {updated} aggiornati")
-    return {"inserted": inserted, "updated": updated}
+    log.info(f"Prodotti:   {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici")
 
 
-def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session) -> dict:
-    inserted = updated = skipped = 0
+def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
+    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
+    for partial in import_prodotti_stream(posizioni, db):
+        result = partial
+    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
+
+
+# ---------------------------------------------------------------------------
+# Offerte
+# ---------------------------------------------------------------------------
+
+def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session):
+    inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
+    total = len(offerte)
 
-    for _, row in offerte.iterrows():
+    for i, (_, row) in enumerate(offerte.iterrows()):
         sap_doc_id = get(row, "Doc. vend.")
         if not sap_doc_id:
             skipped += 1
-            continue
-
-        sap_customer_id = get(row, "Committ.")
-        company = companies.get(sap_customer_id)
-        if not company:
-            skipped += 1
-            continue
-
-        stage = STAGE_VINTO if sap_doc_id in offerte_vinte else STAGE_OFFERTA
-        data = {
-            "company_id": company.id,
-            "sap_document_id": sap_doc_id,
-            "stage": stage,
-            "valore_totale": parse_decimal(get(row, "Val.netto")),
-            "data_scadenza": parse_date(get(row, "Fine off.")),
-            "data_creazione_sap": parse_date(get(row, "Data cr.")),
-            "sap_creato_da": get(row, "Creato") or None,
-        }
-
-        opp = db.query(Opportunity).filter(Opportunity.sap_document_id == sap_doc_id).first()
-        if opp:
-            for k, v in data.items():
-                if v is not None:
-                    setattr(opp, k, v)
-            updated += 1
         else:
-            opp = Opportunity(**data)
-            db.add(opp)
-            db.flush()
-            inserted += 1
+            sap_customer_id = get(row, "Committ.")
+            company = companies.get(sap_customer_id)
+            if not company:
+                skipped += 1
+            else:
+                stage = STAGE_VINTO if sap_doc_id in offerte_vinte else STAGE_OFFERTA
+                data = {
+                    "company_id": company.id,
+                    "sap_document_id": sap_doc_id,
+                    "stage": stage,
+                    "valore_totale": parse_decimal(get(row, "Val.netto")),
+                    "data_scadenza": parse_date(get(row, "Fine off.")),
+                    "data_creazione_sap": parse_date(get(row, "Data cr.")),
+                    "sap_creato_da": get(row, "Creato") or None,
+                }
 
-        db.query(OfferLineItem).filter(OfferLineItem.opportunity_id == opp.id).delete()
-        for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
-            codice = get(riga, "Materiale")
-            db.add(OfferLineItem(
-                opportunity_id=opp.id,
-                codice_sap=codice or None,
-                descrizione_riga=get(riga, "Definizione") or None,
-                quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
-                unita_misura=get(riga, "UM") or None,
-                prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
-                totale_riga=parse_decimal(get(riga, "Val.netto")),
-            ))
+                opp = db.query(Opportunity).filter(Opportunity.sap_document_id == sap_doc_id).first()
+                if opp:
+                    any_changed = any(
+                        _changed(opp, k, v)
+                        for k, v in data.items() if v is not None and hasattr(opp, k)
+                    )
+                    if any_changed:
+                        for k, v in data.items():
+                            if v is not None:
+                                setattr(opp, k, v)
+                        updated += 1
+                    else:
+                        identical += 1
+                else:
+                    opp = Opportunity(**data)
+                    db.add(opp)
+                    db.flush()
+                    inserted += 1
+
+                db.query(OfferLineItem).filter(OfferLineItem.opportunity_id == opp.id).delete()
+                for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
+                    codice = get(riga, "Materiale")
+                    db.add(OfferLineItem(
+                        opportunity_id=opp.id,
+                        codice_sap=codice or None,
+                        descrizione_riga=get(riga, "Definizione") or None,
+                        quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
+                        unita_misura=get(riga, "UM") or None,
+                        prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
+                        totale_riga=parse_decimal(get(riga, "Val.netto")),
+                    ))
+
+        if (i + 1) % 100 == 0 or i == total - 1:
+            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+                   "processed": i + 1, "total": total}
 
     db.commit()
-    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {skipped} saltate")
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate")
 
 
-def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session) -> dict:
-    inserted = updated = skipped = 0
+def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session) -> dict:
+    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
+    for partial in import_offerte_stream(offerte, posizioni, offerte_vinte, db):
+        result = partial
+    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
+
+
+# ---------------------------------------------------------------------------
+# Ordini
+# ---------------------------------------------------------------------------
+
+def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session):
+    inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
     opportunities = {
         o.sap_document_id: o
         for o in db.query(Opportunity).filter(Opportunity.sap_document_id.isnot(None)).all()
     }
+    total = len(ordini)
 
-    for _, row in ordini.iterrows():
+    for i, (_, row) in enumerate(ordini.iterrows()):
         sap_doc_id = get(row, "Doc. vend.")
         if not sap_doc_id:
             skipped += 1
-            continue
-
-        sap_customer_id = get(row, "Committ.")
-        company = companies.get(sap_customer_id)
-        if not company:
-            skipped += 1
-            continue
-
-        sap_offerta_id = offerta_per_ordine.get(sap_doc_id)
-        opportunity = opportunities.get(sap_offerta_id) if sap_offerta_id else None
-
-        data = {
-            "company_id": company.id,
-            "opportunity_id": opportunity.id if opportunity else None,
-            "sap_document_id": sap_doc_id,
-            "valore_totale": parse_decimal(get(row, "Val.netto")),
-            "data_ordine": parse_date(get(row, "Data doc.")),
-            "data_creazione_sap": parse_date(get(row, "Data cr.")),
-            "sap_creato_da": get(row, "Creato") or None,
-        }
-
-        order = db.query(Order).filter(Order.sap_document_id == sap_doc_id).first()
-        if order:
-            for k, v in data.items():
-                setattr(order, k, v)
-            updated += 1
         else:
-            order = Order(**data)
-            db.add(order)
-            db.flush()
-            inserted += 1
+            sap_customer_id = get(row, "Committ.")
+            company = companies.get(sap_customer_id)
+            if not company:
+                skipped += 1
+            else:
+                sap_offerta_id = offerta_per_ordine.get(sap_doc_id)
+                opportunity = opportunities.get(sap_offerta_id) if sap_offerta_id else None
 
-        db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
-        for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
-            codice = get(riga, "Materiale")
-            db.add(OrderLineItem(
-                order_id=order.id,
-                codice_sap=codice or None,
-                descrizione_riga=get(riga, "Definizione") or None,
-                quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
-                unita_misura=get(riga, "UM") or None,
-                prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
-                totale_riga=parse_decimal(get(riga, "Val.netto")),
-            ))
+                data = {
+                    "company_id": company.id,
+                    "opportunity_id": opportunity.id if opportunity else None,
+                    "sap_document_id": sap_doc_id,
+                    "valore_totale": parse_decimal(get(row, "Val.netto")),
+                    "data_ordine": parse_date(get(row, "Data doc.")),
+                    "data_creazione_sap": parse_date(get(row, "Data cr.")),
+                    "sap_creato_da": get(row, "Creato") or None,
+                }
+
+                order = db.query(Order).filter(Order.sap_document_id == sap_doc_id).first()
+                if order:
+                    any_changed = any(
+                        _changed(order, k, v)
+                        for k, v in data.items() if v is not None and hasattr(order, k)
+                    )
+                    if any_changed:
+                        for k, v in data.items():
+                            setattr(order, k, v)
+                        updated += 1
+                    else:
+                        identical += 1
+                else:
+                    order = Order(**data)
+                    db.add(order)
+                    db.flush()
+                    inserted += 1
+
+                db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
+                for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
+                    codice = get(riga, "Materiale")
+                    db.add(OrderLineItem(
+                        order_id=order.id,
+                        codice_sap=codice or None,
+                        descrizione_riga=get(riga, "Definizione") or None,
+                        quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
+                        unita_misura=get(riga, "UM") or None,
+                        prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
+                        totale_riga=parse_decimal(get(riga, "Val.netto")),
+                    ))
+
+        if (i + 1) % 100 == 0 or i == total - 1:
+            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+                   "processed": i + 1, "total": total}
 
     db.commit()
-    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {skipped} saltati")
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati")
 
+
+def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session) -> dict:
+    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
+    for partial in import_ordini_stream(ordini, posizioni, offerta_per_ordine, db):
+        result = partial
+    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
+
+
+# ---------------------------------------------------------------------------
+# run_import_core — used by non-streaming endpoint
+# ---------------------------------------------------------------------------
 
 def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.DataFrame, flusso: pd.DataFrame, db: Session) -> dict:
     offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
     ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
-    offerte_vinte = set(flusso["Doc.prec."].str.strip().unique())
+    offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
     offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
 
     log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni")
