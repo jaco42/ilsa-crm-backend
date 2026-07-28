@@ -744,10 +744,11 @@ async def import_sap(
     vbak: UploadFile = File(...),
     vbap: UploadFile = File(...),
     vbfa: UploadFile = File(...),
+    mara: UploadFile = File(None),
     db: Session = Depends(get_db),
 ):
     try:
-        from app.services.sap_import_service import load_csv_bytes, run_import_core
+        from app.services.sap_import_service import load_csv_bytes, load_mara_lookup, run_import_core
     except ImportError:
         raise HTTPException(status_code=500, detail="pandas non installato sul server")
 
@@ -756,11 +757,12 @@ async def import_sap(
         docvend   = load_csv_bytes(await vbak.read())
         posizioni = load_csv_bytes(await vbap.read())
         flusso    = load_csv_bytes(await vbfa.read())
+        mara_lookup = load_mara_lookup(await mara.read()) if mara else {}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
 
     try:
-        stats = run_import_core(clienti, docvend, posizioni, flusso, db)
+        stats = run_import_core(clienti, docvend, posizioni, flusso, db, mara_lookup)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Errore import: {e}")
@@ -774,6 +776,7 @@ async def import_sap_stream(
     vbak: UploadFile = File(...),
     vbap: UploadFile = File(...),
     vbfa: UploadFile = File(...),
+    mara: UploadFile = File(None),
 ):
     try:
         import pandas as _pd; del _pd  # check pandas is available
@@ -785,13 +788,14 @@ async def import_sap_stream(
         vbak_bytes = await vbak.read()
         vbap_bytes = await vbap.read()
         vbfa_bytes = await vbfa.read()
+        mara_bytes = await mara.read() if mara else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
 
     def generate():
         from app.database import SessionLocal
         from app.services.sap_import_service import (
-            load_csv_bytes, import_companies_stream, import_prodotti_stream,
+            load_csv_bytes, load_mara_lookup, import_companies_stream, import_prodotti_stream,
             import_offerte_stream, import_ordini_stream,
         )
         db = SessionLocal()
@@ -802,6 +806,7 @@ async def import_sap_stream(
             docvend   = load_csv_bytes(vbak_bytes)
             posizioni = load_csv_bytes(vbap_bytes)
             flusso    = load_csv_bytes(vbfa_bytes)
+            mara_lookup = load_mara_lookup(mara_bytes) if mara_bytes else {}
 
             offerte_df         = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
             ordini_df          = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
@@ -832,7 +837,7 @@ async def import_sap_stream(
             # Offerte 60% → 80%
             offerte_stats = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": len(offerte_df), "processed": len(offerte_df)}
             if len(offerte_df) > 0:
-                for partial in import_offerte_stream(offerte_df, posizioni, offerte_vinte, db):
+                for partial in import_offerte_stream(offerte_df, posizioni, offerte_vinte, db, mara_lookup):
                     pct = 60 + int((partial["processed"] / max(partial["total"], 1)) * 20)
                     yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo offerte...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": partial}}) + "\n"
                     offerte_stats = partial
@@ -841,7 +846,7 @@ async def import_sap_stream(
 
             # Ordini 80% → 99%
             ordini_stats = dict(_zero)
-            for partial in import_ordini_stream(ordini_df, posizioni, offerta_per_ordine, db):
+            for partial in import_ordini_stream(ordini_df, posizioni, offerta_per_ordine, db, mara_lookup):
                 pct = 80 + int((partial["processed"] / max(partial["total"], 1)) * 19)
                 yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}}) + "\n"
                 ordini_stats = partial

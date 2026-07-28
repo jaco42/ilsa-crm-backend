@@ -71,6 +71,21 @@ def parse_date(val: str):
     return None
 
 
+def load_mara_lookup(content: bytes) -> dict:
+    """Ritorna {codice_sap: gr_merci} da MARA.CSV."""
+    try:
+        df = load_csv_bytes(content)
+    except Exception:
+        return {}
+    lookup = {}
+    for _, row in df.iterrows():
+        codice = get(row, "Materiale", "MATNR")
+        gr = get(row, "Gr.merci", "Gruppo merci", "MATKL", "Gr. merci")
+        if codice and gr:
+            lookup[codice] = gr
+    return lookup
+
+
 def classify_customer_code(codice: str) -> str:
     if not codice.isnumeric():
         return "special"
@@ -262,7 +277,7 @@ def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
 # Offerte
 # ---------------------------------------------------------------------------
 
-def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session):
+def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None):
     inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
     total = len(offerte)
@@ -318,6 +333,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
                         unita_misura=get(riga, "UM") or None,
                         prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
                         totale_riga=parse_decimal(get(riga, "Val.netto")),
+                        gr_merci=(mara_lookup or {}).get(codice) or None,
                     ))
 
         if (i + 1) % 100 == 0 or i == total - 1:
@@ -328,9 +344,9 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
     log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate")
 
 
-def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session) -> dict:
+def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
     result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for partial in import_offerte_stream(offerte, posizioni, offerte_vinte, db):
+    for partial in import_offerte_stream(offerte, posizioni, offerte_vinte, db, mara_lookup):
         result = partial
     return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
@@ -339,7 +355,7 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
 # Ordini
 # ---------------------------------------------------------------------------
 
-def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session):
+def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
     inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
     opportunities = {
@@ -405,6 +421,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
                         unita_misura=get(riga, "UM") or None,
                         prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
                         totale_riga=parse_decimal(get(riga, "Val.netto")),
+                        gr_merci=(mara_lookup or {}).get(codice) or None,
                     ))
 
         if (i + 1) % 100 == 0 or i == total - 1:
@@ -415,9 +432,9 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
     log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati")
 
 
-def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session) -> dict:
+def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
     result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for partial in import_ordini_stream(ordini, posizioni, offerta_per_ordine, db):
+    for partial in import_ordini_stream(ordini, posizioni, offerta_per_ordine, db, mara_lookup):
         result = partial
     return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
@@ -426,17 +443,17 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
 # run_import_core — used by non-streaming endpoint
 # ---------------------------------------------------------------------------
 
-def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.DataFrame, flusso: pd.DataFrame, db: Session) -> dict:
+def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.DataFrame, flusso: pd.DataFrame, db: Session, mara_lookup: dict = None) -> dict:
     offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
     ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
     offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
     offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
 
-    log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni")
+    log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni, {len(mara_lookup or {})} materiali MARA")
 
     return {
         "companies": import_companies(clienti, db),
         "prodotti":  import_prodotti(posizioni, db),
-        "offerte":   import_offerte(offerte, posizioni, offerte_vinte, db),
-        "ordini":    import_ordini(ordini, posizioni, offerta_per_ordine, db),
+        "offerte":   import_offerte(offerte, posizioni, offerte_vinte, db, mara_lookup),
+        "ordini":    import_ordini(ordini, posizioni, offerta_per_ordine, db, mara_lookup),
     }

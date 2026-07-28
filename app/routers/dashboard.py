@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
 from app.models.order import Order
+from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user
@@ -145,3 +146,73 @@ def dashboard_kpi(
         "pipeline_valore": pipeline_valore,
         "pipeline_count": pipeline_count,
     }
+
+
+@router.get("/per-famiglia")
+def dashboard_per_famiglia(
+    dal: date = Query(...),
+    al: date = Query(...),
+    db: Session = Depends(get_db),
+):
+    # Fatturato per gr_merci dalle righe ordine nel periodo
+    rows = (
+        db.query(
+            OrderLineItem.gr_merci.label("famiglia"),
+            func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
+            func.count(OrderLineItem.id).label("righe"),
+        )
+        .join(Order, OrderLineItem.order_id == Order.id)
+        .filter(
+            Order.data_ordine >= dal,
+            Order.data_ordine <= al,
+            OrderLineItem.gr_merci.isnot(None),
+            OrderLineItem.gr_merci != "",
+        )
+        .group_by(OrderLineItem.gr_merci)
+        .order_by(func.sum(OrderLineItem.totale_riga).desc())
+        .all()
+    )
+
+    totale = sum(float(r.fatturato) for r in rows)
+
+    result = []
+    for r in rows:
+        fat = float(r.fatturato)
+        # Sub-breakdown per codice_sap / descrizione
+        sub_rows = (
+            db.query(
+                OrderLineItem.codice_sap,
+                OrderLineItem.descrizione_riga,
+                func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
+                func.count(OrderLineItem.id).label("righe"),
+            )
+            .join(Order, OrderLineItem.order_id == Order.id)
+            .filter(
+                Order.data_ordine >= dal,
+                Order.data_ordine <= al,
+                OrderLineItem.gr_merci == r.famiglia,
+            )
+            .group_by(OrderLineItem.codice_sap, OrderLineItem.descrizione_riga)
+            .order_by(func.sum(OrderLineItem.totale_riga).desc())
+            .limit(10)
+            .all()
+        )
+
+        result.append({
+            "famiglia": r.famiglia,
+            "fatturato": fat,
+            "righe": int(r.righe),
+            "pct": round(fat / totale * 100) if totale else 0,
+            "sub": [
+                {
+                    "cat": s.descrizione_riga or s.codice_sap or "—",
+                    "codice": s.codice_sap,
+                    "fatturato": float(s.fatturato),
+                    "righe": int(s.righe),
+                    "pct": round(float(s.fatturato) / fat * 100) if fat else 0,
+                }
+                for s in sub_rows
+            ],
+        })
+
+    return result
