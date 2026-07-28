@@ -26,6 +26,7 @@ def dashboard_chart(
     tf: str = Query("1A"),
     metrica: str = Query("fatturato"),
     data_dim: str = Query("ordine"),  # ordine | offerta | cliente (solo per fatturato)
+    gr_merci: str = Query(None),      # filtro per famiglia (usa OrderLineItem.gr_merci)
     db: Session = Depends(get_db),
 ):
     months_back = 36 if tf == "3A" else 12
@@ -34,7 +35,18 @@ def dashboard_chart(
     period_fn = "quarter" if by_quarter else "month"
 
     if metrica == "fatturato":
-        if data_dim == "cliente":
+        if gr_merci:
+            date_col = Order.data_ordine
+            q = (
+                db.query(
+                    func.extract("year", date_col).label("anno"),
+                    func.extract(period_fn, date_col).label("periodo"),
+                    func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
+                )
+                .join(OrderLineItem, OrderLineItem.order_id == Order.id)
+                .filter(date_col >= since, date_col.isnot(None), OrderLineItem.gr_merci == gr_merci)
+            )
+        elif data_dim == "cliente":
             date_col = Company.sap_created_at
             q = (
                 db.query(
@@ -119,7 +131,12 @@ def dashboard_kpi(
     )
     vinte = base_opp.filter(Opportunity.stage == "Chiuso Vinto").count()
     perse = base_opp.filter(Opportunity.stage.in_(STAGE_PERSA)).count()
-    chiuse = vinte + perse
+    # Scadute: ancora aperte ma con data_scadenza passata
+    scadute = base_opp.filter(
+        ~Opportunity.stage.in_(STAGE_PERSA + ["Chiuso Vinto"]),
+        Opportunity.data_scadenza < today,
+    ).count()
+    chiuse = vinte + perse + scadute
     win_rate = round(vinte / chiuse * 100) if chiuse else None
 
     pipeline_valore = float(
