@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
@@ -125,12 +125,20 @@ def dashboard_kpi(
         .scalar() or 0
     )
 
+    un_mese_fa = today - timedelta(days=30)
+    _scaduta = (Opportunity.stage == "Offerta Mandata") & (
+        (Opportunity.data_scadenza < today) |
+        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
+    )
+    _attiva = (Opportunity.stage == "Offerta Mandata") & (
+        (Opportunity.data_scadenza >= today) |
+        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
+    )
+
     vinte, perse, scadute = db.query(
         func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),
         func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
-        func.count(case((
-            (Opportunity.stage == "Offerta Mandata") & (Opportunity.data_scadenza < today), 1
-        ))),
+        func.count(case((_scaduta, 1))),
     ).filter(
         Opportunity.data_creazione_sap >= dal,
         Opportunity.data_creazione_sap <= al,
@@ -140,18 +148,12 @@ def dashboard_kpi(
 
     pipeline_valore = float(
         db.query(func.coalesce(func.sum(Opportunity.valore_totale), 0))
-        .filter(
-            Opportunity.stage == "Offerta Mandata",
-            (Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None),
-        )
+        .filter(_attiva)
         .scalar() or 0
     )
     pipeline_count = int(
         db.query(func.count(Opportunity.id))
-        .filter(
-            Opportunity.stage == "Offerta Mandata",
-            (Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None),
-        )
+        .filter(_attiva)
         .scalar() or 0
     )
 

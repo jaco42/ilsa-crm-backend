@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, case
@@ -53,29 +53,31 @@ def stats_opportunity(
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al)
 
+    un_mese_fa = today - timedelta(days=30)
+    # scaduta: data_scadenza passata, OPPURE nessuna data_scadenza ma creata >30gg fa
+    _scaduta = (Opportunity.stage == 'Offerta Mandata') & (
+        (Opportunity.data_scadenza < today) |
+        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
+    )
+    # attiva: ha ancora data_scadenza valida, OPPURE nessuna scadenza e creata entro 30gg (o senza data creazione)
+    _attiva = (Opportunity.stage == 'Offerta Mandata') & (
+        (Opportunity.data_scadenza >= today) |
+        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
+    )
+
     row = q.with_entities(
         func.count(Opportunity.id),
         func.coalesce(func.sum(Opportunity.valore_totale), 0),
         func.count(case((Opportunity.stage == 'Chiuso Vinto', 1))),
         func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
-        func.count(case((
-            (Opportunity.stage == 'Offerta Mandata') & (Opportunity.data_scadenza < today), 1
-        ))),
-        func.count(case((
-            (Opportunity.stage == 'Offerta Mandata') &
-            ((Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None)), 1
-        ))),
+        func.count(case((_scaduta, 1))),
+        func.count(case((_attiva, 1))),
         func.coalesce(func.sum(case((Opportunity.stage == 'Chiuso Vinto', Opportunity.valore_totale))), 0),
         func.coalesce(func.sum(case((
-            (Opportunity.stage.in_(STAGE_PERSA)) |
-            ((Opportunity.stage == 'Offerta Mandata') & (Opportunity.data_scadenza < today)),
+            Opportunity.stage.in_(STAGE_PERSA) | _scaduta,
             Opportunity.valore_totale
         ))), 0),
-        func.coalesce(func.sum(case((
-            (Opportunity.stage == 'Offerta Mandata') &
-            ((Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None)),
-            Opportunity.valore_totale
-        ))), 0),
+        func.coalesce(func.sum(case((_attiva, Opportunity.valore_totale))), 0),
     ).one()
 
     totale, valore_tot, vinte, perse, scadute, attive, valore_vinto, valore_perso, valore_pipeline = row
