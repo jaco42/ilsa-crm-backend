@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, case
 from app.database import get_db
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
@@ -125,16 +125,16 @@ def dashboard_kpi(
         .scalar() or 0
     )
 
-    base_opp = db.query(Opportunity).filter(
+    vinte, perse, scadute = db.query(
+        func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),
+        func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
+        func.count(case((
+            (Opportunity.stage == "Offerta Mandata") & (Opportunity.data_scadenza < today), 1
+        ))),
+    ).filter(
         Opportunity.data_creazione_sap >= dal,
         Opportunity.data_creazione_sap <= al,
-    )
-    vinte = base_opp.filter(Opportunity.stage == "Chiuso Vinto").count()
-    perse = base_opp.filter(Opportunity.stage.in_(STAGE_PERSA)).count()
-    scadute = base_opp.filter(
-        Opportunity.stage == "Offerta Mandata",
-        Opportunity.data_scadenza < today,
-    ).count()
+    ).one()
     chiuse = vinte + perse + scadute
     win_rate = round(vinte / chiuse * 100) if chiuse else None
 
