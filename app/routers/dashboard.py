@@ -131,9 +131,8 @@ def dashboard_kpi(
     )
     vinte = base_opp.filter(Opportunity.stage == "Chiuso Vinto").count()
     perse = base_opp.filter(Opportunity.stage.in_(STAGE_PERSA)).count()
-    # Scadute: ancora aperte ma con data_scadenza passata
     scadute = base_opp.filter(
-        ~Opportunity.stage.in_(STAGE_PERSA + ["Chiuso Vinto"]),
+        Opportunity.stage == "Offerta Mandata",
         Opportunity.data_scadenza < today,
     ).count()
     chiuse = vinte + perse + scadute
