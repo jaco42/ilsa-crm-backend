@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
@@ -8,11 +8,11 @@ from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user
+from app.services.opportunity_stats import opportunity_stats as _opp_stats, build_scaduta_attiva
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_user)])
 
 MESI_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
-STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
 
 
 def _since(months_back: int) -> date:
@@ -125,35 +125,18 @@ def dashboard_kpi(
         .scalar() or 0
     )
 
-    un_mese_fa = today - timedelta(days=30)
-    _scaduta = (Opportunity.stage == "Offerta Mandata") & (
-        (Opportunity.data_scadenza < today) |
-        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
-    )
-    _attiva = (Opportunity.stage == "Offerta Mandata") & (
-        (Opportunity.data_scadenza >= today) |
-        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
-    )
+    stats = _opp_stats(db, today, creazione_dal=dal, creazione_al=al)
+    win_rate = stats["tasso_successo"]
 
-    vinte, perse, scadute = db.query(
-        func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),
-        func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
-        func.count(case((_scaduta, 1))),
-    ).filter(
-        Opportunity.data_creazione_sap >= dal,
-        Opportunity.data_creazione_sap <= al,
-    ).one()
-    chiuse = vinte + perse + scadute
-    win_rate = round(vinte / chiuse * 100) if chiuse else None
-
+    _, attiva_cond = build_scaduta_attiva(today)
     pipeline_valore = float(
         db.query(func.coalesce(func.sum(Opportunity.valore_totale), 0))
-        .filter(_attiva)
+        .filter(attiva_cond)
         .scalar() or 0
     )
     pipeline_count = int(
         db.query(func.count(Opportunity.id))
-        .filter(_attiva)
+        .filter(attiva_cond)
         .scalar() or 0
     )
 
