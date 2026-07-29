@@ -235,14 +235,13 @@ def select_companies(db, batch: int, company_id: str | None) -> list:
     )
 
 
-def write_via_api(company_id: str, fields: dict, service_key: str) -> dict:
+def write_via_api(company_id: str, fields: dict, service_key: str, sap_customer_id: str | None = None) -> dict:
     import httpx
-    resp = httpx.patch(
-        f"{BACKEND_URL}/companies/{company_id}/enrich",
-        json=fields,
-        headers={"x-service-key": service_key},
-        timeout=10,
-    )
+    if sap_customer_id:
+        url = f"{BACKEND_URL}/companies/enrich-by-sap/{sap_customer_id}"
+    else:
+        url = f"{BACKEND_URL}/companies/{company_id}/enrich"
+    resp = httpx.patch(url, json=fields, headers={"x-service-key": service_key}, timeout=10)
     resp.raise_for_status()
     return resp.json().get("updated", {})
 
@@ -299,7 +298,7 @@ def process(companies, client, dry_run: bool) -> list[dict]:
 
             if to_write:
                 service_key = os.environ.get("SERVICE_API_KEY", "").strip()
-                written = write_via_api(str(c.id), to_write, service_key)
+                written = write_via_api(str(c.id), to_write, service_key, sap_customer_id=c.sap_customer_id)
                 entry["aggiornato"] = {k: {"value": v, "confidence": data[k]["confidence"]} for k, v in written.items()}
                 if not written:
                     log.info("  → tutti i campi già presenti, nessun aggiornamento")

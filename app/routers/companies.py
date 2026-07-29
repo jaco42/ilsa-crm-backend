@@ -333,19 +333,12 @@ def elimina_azienda(company_id: str, db: Session = Depends(get_db)):
     db.commit()
 
 
-@service_router.patch("/{company_id}/enrich")
-def enrich_azienda(
-    company_id: str,
-    data: dict,
-    db: Session = Depends(get_db),
-    x_service_key: str = Header(None),
-):
-    """Endpoint per lo script di enrichment. Scrive solo i campi non già presenti."""
+def _auth_service(x_service_key: str):
     if not settings.service_api_key or x_service_key != settings.service_api_key:
         raise HTTPException(status_code=403, detail="Service key non valida")
-    company = db.query(Company).filter(Company.id == company_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Azienda non trovata")
+
+
+def _apply_enrichment(company: Company, data: dict, db: Session) -> dict:
     ENRICHMENT_FIELDS = {"website", "email", "telefono"}
     updated = {}
     for field, value in data.items():
@@ -355,7 +348,35 @@ def enrich_azienda(
             setattr(company, field, value)
             updated[field] = value
     db.commit()
-    return {"updated": updated}
+    return updated
+
+
+@service_router.patch("/{company_id}/enrich")
+def enrich_azienda(
+    company_id: str,
+    data: dict,
+    db: Session = Depends(get_db),
+    x_service_key: str = Header(None),
+):
+    _auth_service(x_service_key)
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Azienda non trovata")
+    return {"updated": _apply_enrichment(company, data, db)}
+
+
+@service_router.patch("/enrich-by-sap/{sap_id}")
+def enrich_azienda_by_sap(
+    sap_id: str,
+    data: dict,
+    db: Session = Depends(get_db),
+    x_service_key: str = Header(None),
+):
+    _auth_service(x_service_key)
+    company = db.query(Company).filter(Company.sap_customer_id == sap_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Azienda non trovata")
+    return {"updated": _apply_enrichment(company, data, db)}
 
 
 @router.patch("/{company_id}")
