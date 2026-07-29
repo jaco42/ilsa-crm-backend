@@ -158,18 +158,12 @@ def dashboard_kpi(
         .scalar() or 0
     )
 
-    import logging; logging.getLogger(__name__).warning(
-        f"[DASHBOARD/kpi] dal={dal} al={al} "
-        f"today={today} un_mese_fa={un_mese_fa} "
-        f"vinte={vinte} perse={perse} scadute={scadute} chiuse={chiuse} win_rate={win_rate}"
-    )
     return {
         "fatturato": fatturato,
         "nuovi_clienti": nuovi_clienti,
         "win_rate": win_rate,
         "pipeline_valore": pipeline_valore,
         "pipeline_count": pipeline_count,
-        "_debug": {"vinte": vinte, "perse": perse, "scadute": scadute, "chiuse": chiuse, "today": str(today), "un_mese_fa": str(un_mese_fa), "filtri": {"dal": str(dal), "al": str(al)}},
     }
 
 

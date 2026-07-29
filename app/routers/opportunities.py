@@ -76,11 +76,6 @@ def stats_opportunity(
     ).one()
 
     chiuse = vinte + perse + scadute
-    import logging; logging.getLogger(__name__).warning(
-        f"[OFFERTE/stats] creazione_dal={creazione_dal} creazione_al={creazione_al} "
-        f"today={today} un_mese_fa={un_mese_fa} "
-        f"vinte={vinte} perse={perse} scadute={scadute} chiuse={chiuse} tasso={round(vinte/chiuse*100) if chiuse else None}"
-    )
     return {
         "totale": totale,
         "vinte": vinte,
@@ -92,7 +87,6 @@ def stats_opportunity(
         "valore_pipeline": float(valore_pipeline),
         "valore_vinto": float(valore_vinto),
         "valore_perso": float(valore_perso),
-        "_debug": {"vinte": vinte, "perse": perse, "scadute": scadute, "chiuse": chiuse, "today": str(today), "un_mese_fa": str(un_mese_fa), "filtri": {"creazione_dal": str(creazione_dal), "creazione_al": str(creazione_al)}},
     }
 
 
