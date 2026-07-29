@@ -784,15 +784,19 @@ async def import_sap_stream(
         raise HTTPException(status_code=500, detail="pandas non installato sul server")
 
     try:
-        kna1_bytes = await kna1.read()
-        vbak_bytes = await vbak.read()
-        vbap_bytes = await vbap.read()
-        vbfa_bytes = await vbfa.read()
+        # Raccogliamo i bytes in un dict: il generatore li libera via .pop() man mano
+        file_bytes = {
+            "kna1": await kna1.read(),
+            "vbak": await vbak.read(),
+            "vbap": await vbap.read(),
+            "vbfa": await vbfa.read(),
+        }
         mara_bytes = await mara.read() if mara else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
 
     def generate():
+        import gc
         from app.database import SessionLocal
         from app.services.sap_import_service import (
             load_csv_bytes, load_mara_lookup, import_companies_stream, import_prodotti_stream,
@@ -802,30 +806,38 @@ async def import_sap_stream(
         try:
             yield json.dumps({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."}) + "\n"
 
-            clienti   = load_csv_bytes(kna1_bytes)
-            docvend   = load_csv_bytes(vbak_bytes)
-            posizioni = load_csv_bytes(vbap_bytes)
-            flusso    = load_csv_bytes(vbfa_bytes)
             mara_lookup = load_mara_lookup(mara_bytes) if mara_bytes else {}
-
-            offerte_df         = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
-            ordini_df          = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
-            offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
-            offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
-
-            yield json.dumps({
-                "type": "progress", "pct": 12,
-                "fase": f"File letti — VBAK: {len(offerte_df)} offerte (5xxxxx) + {len(ordini_df)} ordini (1xxxxx)",
-            }) + "\n"
 
             _zero = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": 0, "processed": 0}
 
-            # Companies 15% → 45%
+            # --- Companies 15% → 45% (carica e libera KNA1) ---
+            clienti = load_csv_bytes(file_bytes.pop("kna1")); gc.collect()
             companies_stats = dict(_zero)
             for partial in import_companies_stream(clienti, db):
                 pct = 15 + int((partial["processed"] / max(partial["total"], 1)) * 30)
                 yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo aziende...", "stats": {"companies": partial}}) + "\n"
                 companies_stats = partial
+            del clienti; gc.collect()
+
+            # --- Split VBAK in offerte/ordini, poi libera VBAK ---
+            docvend = load_csv_bytes(file_bytes.pop("vbak")); gc.collect()
+            offerte_df = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
+            ordini_df  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
+            del docvend; gc.collect()
+
+            # --- Estrai dicts da VBFA, poi libera VBFA ---
+            flusso = load_csv_bytes(file_bytes.pop("vbfa")); gc.collect()
+            offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
+            offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
+            del flusso; gc.collect()
+
+            yield json.dumps({
+                "type": "progress", "pct": 12,
+                "fase": f"Aziende ok — VBAK: {len(offerte_df)} offerte + {len(ordini_df)} ordini",
+            }) + "\n"
+
+            # --- Prodotti + Offerte + Ordini condividono VBAP ---
+            posizioni = load_csv_bytes(file_bytes.pop("vbap")); gc.collect()
 
             # Prodotti 45% → 60%
             prodotti_stats = dict(_zero)
@@ -843,6 +855,7 @@ async def import_sap_stream(
                     offerte_stats = partial
             else:
                 yield json.dumps({"type": "progress", "pct": 80, "fase": "Offerte: 0 righe nel VBAK con prefisso 5xxxxx", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats}}) + "\n"
+            del offerte_df; gc.collect()
 
             # Ordini 80% → 99%
             ordini_stats = dict(_zero)
@@ -850,6 +863,7 @@ async def import_sap_stream(
                 pct = 80 + int((partial["processed"] / max(partial["total"], 1)) * 19)
                 yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}}) + "\n"
                 ordini_stats = partial
+            del ordini_df, posizioni; gc.collect()
 
             yield json.dumps({"type": "done", "pct": 100, "stats": {
                 "companies": companies_stats,
