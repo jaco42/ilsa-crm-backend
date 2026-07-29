@@ -476,8 +476,16 @@ def main():
 
     offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
     ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
-    offerte_vinte = set(flusso1["Doc.prec."].str.strip().unique())
-    offerta_per_ordine = dict(zip(flusso1["Doc. succ."].str.strip(), flusso1["Doc.prec."].str.strip()))
+    def _col(df, *names):
+        for n in names:
+            if n in df.columns:
+                return df[n].str.strip()
+        raise KeyError(f"Colonna non trovata: {names}. Disponibili: {list(df.columns)}")
+
+    prec = _col(flusso1, "Doc.prec.", "Doc. prec.")
+    succ = _col(flusso1, "Doc. succ.", "Doc.succ.")
+    offerte_vinte = set(prec.unique())
+    offerta_per_ordine = dict(zip(succ, prec))
 
     log.info(f"Caricati: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni")
 

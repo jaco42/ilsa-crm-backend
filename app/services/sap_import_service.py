@@ -71,6 +71,17 @@ def parse_date(val: str):
     return None
 
 
+def _flusso_series(df: pd.DataFrame, *candidates: str) -> pd.Series:
+    """Restituisce la prima colonna trovata tra i candidati (gestisce varianti SAP con/senza spazio)."""
+    for c in candidates:
+        if c in df.columns:
+            return df[c].str.strip()
+    raise KeyError(
+        f"Colonna VBFA non trovata (cercato: {candidates}). "
+        f"Colonne disponibili: {list(df.columns)}"
+    )
+
+
 def load_mara_lookup(content: bytes) -> dict:
     """Ritorna {codice_sap: gr_merci} da MARA.CSV."""
     try:
@@ -446,8 +457,10 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
 def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.DataFrame, flusso: pd.DataFrame, db: Session, mara_lookup: dict = None) -> dict:
     offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
     ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
-    offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
-    offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
+    prec = _flusso_series(flusso, "Doc.prec.", "Doc. prec.")
+    succ = _flusso_series(flusso, "Doc. succ.", "Doc.succ.")
+    offerte_vinte      = set(prec.unique())
+    offerta_per_ordine = dict(zip(succ, prec))
 
     log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni, {len(mara_lookup or {})} materiali MARA")
 

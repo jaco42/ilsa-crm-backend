@@ -826,10 +826,13 @@ async def import_sap_stream(
             del docvend; gc.collect()
 
             # --- Estrai dicts da VBFA, poi libera VBFA ---
+            from app.services.sap_import_service import _flusso_series
             flusso = load_csv_bytes(file_bytes.pop("vbfa")); gc.collect()
-            offerte_vinte      = set(flusso["Doc.prec."].str.strip().unique())
-            offerta_per_ordine = dict(zip(flusso["Doc. succ."].str.strip(), flusso["Doc.prec."].str.strip()))
-            del flusso; gc.collect()
+            prec = _flusso_series(flusso, "Doc.prec.", "Doc. prec.")
+            succ = _flusso_series(flusso, "Doc. succ.", "Doc.succ.")
+            offerte_vinte      = set(prec.unique())
+            offerta_per_ordine = dict(zip(succ, prec))
+            del flusso, prec, succ; gc.collect()
 
             yield json.dumps({
                 "type": "progress", "pct": 12,
