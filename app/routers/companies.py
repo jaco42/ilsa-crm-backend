@@ -8,6 +8,7 @@ from app.models.opportunity import Opportunity
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
 from app.auth import get_current_user
+from app.services.opportunity_stats import build_scaduta_attiva
 
 router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(get_current_user)])
 
@@ -53,14 +54,7 @@ def lista_aziende(
     max_offerte_totali: int = Query(None),
 ):
     today = date.today()
-
-    attiva_cond = (
-        (Opportunity.stage == "Offerta Mandata") &
-        ((Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None))
-    )
-    scaduta_cond = (
-        (Opportunity.stage == "Offerta Mandata") & (Opportunity.data_scadenza < today)
-    )
+    scaduta_cond, attiva_cond = build_scaduta_attiva(today)
     opp_q = db.query(
         Opportunity.company_id,
         func.count(case((attiva_cond, 1))).label("offerte_attive"),
