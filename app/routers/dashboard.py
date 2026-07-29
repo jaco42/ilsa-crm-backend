@@ -8,7 +8,7 @@ from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user
-from app.services.opportunity_stats import win_rate_from_query, build_scaduta_attiva
+from datetime import timedelta
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_user)])
 
@@ -125,13 +125,27 @@ def dashboard_kpi(
         .scalar() or 0
     )
 
-    q_opp = db.query(Opportunity).filter(
+    un_mese_fa = today - timedelta(days=30)
+    scaduta_cond = (Opportunity.stage == "Offerta Mandata") & (
+        (Opportunity.data_scadenza < today) |
+        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
+    )
+    attiva_cond = (Opportunity.stage == "Offerta Mandata") & (
+        (Opportunity.data_scadenza >= today) |
+        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
+    )
+
+    vinte, perse, scadute = db.query(
+        func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),
+        func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
+        func.count(case((scaduta_cond, 1))),
+    ).filter(
         Opportunity.data_creazione_sap >= dal,
         Opportunity.data_creazione_sap <= al,
-    )
-    win_rate = win_rate_from_query(q_opp, today)["tasso_successo"]
+    ).one()
+    chiuse = vinte + perse + scadute
+    win_rate = round(vinte / chiuse * 100) if chiuse else None
 
-    _, attiva_cond = build_scaduta_attiva(today)
     pipeline_valore = float(
         db.query(func.coalesce(func.sum(Opportunity.valore_totale), 0))
         .filter(attiva_cond)

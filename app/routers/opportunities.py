@@ -9,13 +9,11 @@ from app.models.order import Order
 from app.models.company import Company
 from app.auth import get_current_user
 from app.services import funnel_service
-from app.services.opportunity_stats import win_rate_from_query, build_scaduta_attiva, STAGE_PERSA as _STAGE_PERSA
-
 router = APIRouter(prefix="/opportunities", tags=["opportunities"], dependencies=[Depends(get_current_user)])
 
 TODAY = date.today
 
-STAGE_PERSA = _STAGE_PERSA
+STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
 
 
 def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al):
@@ -48,32 +46,44 @@ def stats_opportunity(
     creazione_dal: date = Query(None),
     creazione_al: date = Query(None),
 ):
+    from datetime import timedelta
     today = date.today()
-    scaduta_cond, attiva_cond = build_scaduta_attiva(today)
+    un_mese_fa = today - timedelta(days=30)
+    scaduta_cond = (Opportunity.stage == 'Offerta Mandata') & (
+        (Opportunity.data_scadenza < today) |
+        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
+    )
+    attiva_cond = (Opportunity.stage == 'Offerta Mandata') & (
+        (Opportunity.data_scadenza >= today) |
+        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
+    )
 
     q = db.query(Opportunity)
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al)
 
-    wr = win_rate_from_query(q, today)
-
-    totale, valore_tot, valore_vinto, valore_perso, valore_pipeline = q.with_entities(
+    totale, valore_tot, vinte, perse, scadute, attive, valore_vinto, valore_perso, valore_pipeline = q.with_entities(
         func.count(Opportunity.id),
         func.coalesce(func.sum(Opportunity.valore_totale), 0),
+        func.count(case((Opportunity.stage == 'Chiuso Vinto', 1))),
+        func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
+        func.count(case((scaduta_cond, 1))),
+        func.count(case((attiva_cond, 1))),
         func.coalesce(func.sum(case((Opportunity.stage == 'Chiuso Vinto', Opportunity.valore_totale))), 0),
         func.coalesce(func.sum(case((Opportunity.stage.in_(STAGE_PERSA) | scaduta_cond, Opportunity.valore_totale))), 0),
         func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0),
     ).one()
 
+    chiuse = vinte + perse + scadute
     return {
         "totale": totale,
-        "vinte": wr["vinte"],
-        "perse": wr["perse"],
-        "scadute": wr["scadute"],
-        "attive": wr["attive"],
-        "chiuse": wr["chiuse"],
-        "tasso_successo": wr["tasso_successo"],
+        "vinte": vinte,
+        "perse": perse,
+        "scadute": scadute,
+        "attive": attive,
+        "chiuse": chiuse,
+        "tasso_successo": round(vinte / chiuse * 100) if chiuse else None,
         "valore_pipeline": float(valore_pipeline),
         "valore_vinto": float(valore_vinto),
         "valore_perso": float(valore_perso),
