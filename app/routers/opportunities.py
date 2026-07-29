@@ -103,16 +103,20 @@ def lista_opportunity(
     creazione_dal: date = Query(None),
     creazione_al: date = Query(None),
     search: str = Query(None),
+    sort_by: str = Query('data_creazione_sap'),
+    sort_dir: str = Query('desc'),
     limit: int = Query(100),
     offset: int = Query(0),
 ):
     today = date.today()
+    company_joined = False
     q = db.query(Opportunity).options(joinedload(Opportunity.company))
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al)
     if search:
         q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
+        company_joined = True
         q = q.filter(
             Opportunity.sap_document_id.ilike(f"%{search}%") |
             Company.ragione_sociale.ilike(f"%{search}%")
@@ -127,7 +131,23 @@ def lista_opportunity(
         q = q.filter(Opportunity.stage == 'Offerta Mandata',
                      (Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None))
     total = q.count()
-    items = q.order_by(Opportunity.data_creazione_sap.desc()).offset(offset).limit(limit).all()
+
+    # Ordinamento server-side
+    _SORT_COLS = {
+        'data_creazione_sap': Opportunity.data_creazione_sap,
+        'data_scadenza':      Opportunity.data_scadenza,
+        'valore_totale':      Opportunity.valore_totale,
+        'sap_document_id':    Opportunity.sap_document_id,
+        'sap_creato_da':      Opportunity.sap_creato_da,
+    }
+    if sort_by == 'ragione_sociale':
+        if not company_joined:
+            q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
+        sort_col = Company.ragione_sociale
+    else:
+        sort_col = _SORT_COLS.get(sort_by, Opportunity.data_creazione_sap)
+    order_expr = sort_col.asc() if sort_dir == 'asc' else sort_col.desc()
+    items = q.order_by(order_expr).offset(offset).limit(limit).all()
 
     opp_ids = [opp.id for opp in items]
     orders = db.query(Order.opportunity_id, Order.id, Order.sap_document_id).filter(
