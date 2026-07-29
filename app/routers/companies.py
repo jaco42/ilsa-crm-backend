@@ -1,5 +1,5 @@
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, select
 from app.database import get_db
@@ -9,8 +9,10 @@ from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
 from app.auth import get_current_user
 from app.services.opportunity_stats import build_scaduta_attiva
+from app.config import settings
 
 router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(get_current_user)])
+service_router = APIRouter(prefix="/companies", tags=["companies"])
 
 
 def _status_dinamico(c: Company) -> str:
@@ -272,6 +274,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db)):
         "provincia": company.provincia,
         "paese": company.paese,
         "tipo_attivita": company.tipo_attivita,
+        "website": company.website,
         "telefono": company.telefono,
         "telefono_override": company.telefono_override,
         "email": company.email,
@@ -328,6 +331,31 @@ def elimina_azienda(company_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Impossibile eliminare un'azienda sincronizzata da SAP")
     db.delete(company)
     db.commit()
+
+
+@service_router.patch("/{company_id}/enrich")
+def enrich_azienda(
+    company_id: str,
+    data: dict,
+    db: Session = Depends(get_db),
+    x_service_key: str = Header(None),
+):
+    """Endpoint per lo script di enrichment. Scrive solo i campi non già presenti."""
+    if not settings.service_api_key or x_service_key != settings.service_api_key:
+        raise HTTPException(status_code=403, detail="Service key non valida")
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Azienda non trovata")
+    ENRICHMENT_FIELDS = {"website", "email", "telefono"}
+    updated = {}
+    for field, value in data.items():
+        if field not in ENRICHMENT_FIELDS:
+            continue
+        if value and not getattr(company, field):
+            setattr(company, field, value)
+            updated[field] = value
+    db.commit()
+    return {"updated": updated}
 
 
 @router.patch("/{company_id}")

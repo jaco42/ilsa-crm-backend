@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from: str = ""
+    groq_api_key: str = ""
+    service_api_key: str = ""
 
     class Config:
         env_file = ".env"
