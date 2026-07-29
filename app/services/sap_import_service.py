@@ -24,8 +24,17 @@ STAGE_OFFERTA = "Offerta Mandata"
 
 
 def load_csv_bytes(content: bytes) -> pd.DataFrame:
+    # Auto-detect separator: alcuni export SAP usano tab invece di |
+    try:
+        sample = content.decode(ENCODING, errors="replace")
+    except Exception:
+        sample = content.decode("utf-8", errors="replace")
+    lines = [l for l in sample.split("\n") if l.strip()]
+    probe = lines[3] if len(lines) > 3 else (lines[0] if lines else "")
+    sep = "\t" if probe.count("\t") > probe.count("|") else SEP
+
     df = pd.read_csv(
-        io.BytesIO(content), sep=SEP, dtype=str, encoding=ENCODING,
+        io.BytesIO(content), sep=sep, dtype=str, encoding=ENCODING,
         skiprows=3, skipinitialspace=True, on_bad_lines="skip", quoting=3,
     )
     df.columns = df.columns.str.strip().str.strip("|")

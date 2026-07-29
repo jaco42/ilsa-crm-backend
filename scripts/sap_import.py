@@ -114,7 +114,11 @@ def _gerarchia_to_famiglia(g: str):
 # ---------------------------------------------------------------------------
 
 def load_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, sep=SEP, dtype=str, encoding=ENCODING, skiprows=3, skipinitialspace=True, on_bad_lines='skip', quoting=3)
+    probe = path.read_bytes()
+    lines = [l for l in probe.decode(ENCODING, errors="replace").split("\n") if l.strip()]
+    probe_line = lines[3] if len(lines) > 3 else (lines[0] if lines else "")
+    sep = "\t" if probe_line.count("\t") > probe_line.count("|") else SEP
+    df = pd.read_csv(path, sep=sep, dtype=str, encoding=ENCODING, skiprows=3, skipinitialspace=True, on_bad_lines='skip', quoting=3)
     df.columns = df.columns.str.strip().str.strip("|")
     for col in df.columns:
         s = df[col]
