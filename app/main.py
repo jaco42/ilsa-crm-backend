@@ -18,6 +18,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(companies.router)
+app.include_router(companies.service_router)
 app.include_router(contacts.router)
 app.include_router(users.router)
 app.include_router(agenti.router)

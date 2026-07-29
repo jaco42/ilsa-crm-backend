@@ -28,6 +28,7 @@ class Company(Base):
     provincia = Column(String, nullable=True)
     paese = Column(String, nullable=True)
     tipo_attivita = Column(String, nullable=True)
+    website = Column(String, nullable=True)
     telefono = Column(String, nullable=True)
     telefono_override = Column(Boolean, nullable=False, default=False)
     email = Column(String, nullable=True)
