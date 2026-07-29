@@ -126,10 +126,21 @@ def lista_opportunity(
     elif stato == 'persa':
         q = q.filter(Opportunity.stage.in_(STAGE_PERSA))
     elif stato == 'scaduta':
-        q = q.filter(Opportunity.stage == 'Offerta Mandata', Opportunity.data_scadenza < today)
+        from datetime import timedelta
+        un_mese_fa = today - timedelta(days=30)
+        q = q.filter(
+            Opportunity.stage == 'Offerta Mandata',
+            (Opportunity.data_scadenza < today) |
+            ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
+        )
     elif stato == 'mandata':
-        q = q.filter(Opportunity.stage == 'Offerta Mandata',
-                     (Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None))
+        from datetime import timedelta
+        un_mese_fa = today - timedelta(days=30)
+        q = q.filter(
+            Opportunity.stage == 'Offerta Mandata',
+            (Opportunity.data_scadenza >= today) |
+            ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
+        )
     total = q.count()
 
     # Ordinamento server-side

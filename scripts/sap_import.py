@@ -297,9 +297,13 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
             for k, v in data.items():
                 if v is not None:
                     setattr(opp, k, v)
+            if stage == STAGE_VINTO:
+                opp.data_scadenza = None
             updated += 1
         else:
             opp = Opportunity(**data)
+            if stage == STAGE_VINTO:
+                opp.data_scadenza = None
             db.add(opp)
             db.flush()
             inserted += 1
