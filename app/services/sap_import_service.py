@@ -220,14 +220,24 @@ def _changed(obj, field: str, new_val) -> bool:
 
 
 def _build_posizioni_index(posizioni: pd.DataFrame) -> dict:
-    """O(N) — elimina i DataFrame filter O(N×M) per ogni documento."""
+    """O(N) compact index {doc_id: [tuple di 7 campi]}.
+    Usa tuple invece di Series: ~5x meno RAM, DataFrame liberabile subito dopo."""
     index = {}
     for _, riga in posizioni.iterrows():
         doc_id = get(riga, "Doc. vend.")
-        if doc_id:
-            if doc_id not in index:
-                index[doc_id] = []
-            index[doc_id].append(riga)
+        if not doc_id:
+            continue
+        if doc_id not in index:
+            index[doc_id] = []
+        index[doc_id].append((
+            get(riga, "Materiale"),
+            get(riga, "Definizione"),
+            get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine"),
+            get(riga, "UM"),
+            get(riga, "Prz. netto"),
+            get(riga, "Val.netto"),
+            get(riga, "Gerarchia prodotti"),
+        ))
     return index
 
 
@@ -400,7 +410,7 @@ def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
 # Offerte
 # ---------------------------------------------------------------------------
 
-def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None):
+def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte_vinte: set, db: Session, mara_lookup: dict = None):
     inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
     total = len(offerte)
@@ -410,9 +420,6 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
         o.sap_document_id: o
         for o in db.query(Opportunity).filter(Opportunity.sap_document_id.isnot(None)).all()
     }
-
-    # Indice posizioni O(N) — elimina scan O(N×M) per documento
-    posizioni_by_doc = _build_posizioni_index(posizioni)
 
     to_insert = []
     processed_doc_ids = []
@@ -480,17 +487,16 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
         opp = existing_opps.get(doc_id)
         if not opp:
             continue
-        for riga in posizioni_by_doc.get(doc_id, []):
-            codice = get(riga, "Materiale")
-            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+        for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
+            l1, l2 = _gerarchia_to_famiglia(gerarchia)
             line_items.append(OfferLineItem(
                 opportunity_id=opp.id,
                 codice_sap=codice or None,
-                descrizione_riga=get(riga, "Definizione") or None,
-                quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
-                unita_misura=get(riga, "UM") or None,
-                prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
-                totale_riga=parse_decimal(get(riga, "Val.netto")),
+                descrizione_riga=definizione or None,
+                quantita=parse_decimal(qty),
+                unita_misura=um or None,
+                prezzo_unitario=parse_decimal(prz),
+                totale_riga=parse_decimal(val),
                 gr_merci=l1,
                 categoria=l2,
             ))
@@ -506,7 +512,8 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
 
 def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
     result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for partial in import_offerte_stream(offerte, posizioni, offerte_vinte, db, mara_lookup):
+    posizioni_by_doc = _build_posizioni_index(posizioni)
+    for partial in import_offerte_stream(offerte, posizioni_by_doc, offerte_vinte, db, mara_lookup):
         result = partial
     return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
@@ -515,7 +522,7 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
 # Ordini
 # ---------------------------------------------------------------------------
 
-def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
+def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
     inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
     total = len(ordini)
@@ -529,8 +536,6 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
         o.sap_document_id: o
         for o in db.query(Order).filter(Order.sap_document_id.isnot(None)).all()
     }
-
-    posizioni_by_doc = _build_posizioni_index(posizioni)
 
     to_insert = []
     processed_doc_ids = []
@@ -600,17 +605,16 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
         order = existing_orders.get(doc_id)
         if not order:
             continue
-        for riga in posizioni_by_doc.get(doc_id, []):
-            codice = get(riga, "Materiale")
-            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+        for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
+            l1, l2 = _gerarchia_to_famiglia(gerarchia)
             line_items.append(OrderLineItem(
                 order_id=order.id,
                 codice_sap=codice or None,
-                descrizione_riga=get(riga, "Definizione") or None,
-                quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
-                unita_misura=get(riga, "UM") or None,
-                prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
-                totale_riga=parse_decimal(get(riga, "Val.netto")),
+                descrizione_riga=definizione or None,
+                quantita=parse_decimal(qty),
+                unita_misura=um or None,
+                prezzo_unitario=parse_decimal(prz),
+                totale_riga=parse_decimal(val),
                 gr_merci=l1,
                 categoria=l2,
             ))
@@ -626,7 +630,8 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
 
 def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
     result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for partial in import_ordini_stream(ordini, posizioni, offerta_per_ordine, db, mara_lookup):
+    posizioni_by_doc = _build_posizioni_index(posizioni)
+    for partial in import_ordini_stream(ordini, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
         result = partial
     return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
@@ -645,9 +650,18 @@ def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.
 
     log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni")
 
-    return {
-        "companies": import_companies(clienti, db),
-        "prodotti":  import_prodotti(posizioni, db),
-        "offerte":   import_offerte(offerte, posizioni, offerte_vinte, db, mara_lookup),
-        "ordini":    import_ordini(ordini, posizioni, offerta_per_ordine, db, mara_lookup),
-    }
+    companies_r = import_companies(clienti, db)
+    prodotti_r  = import_prodotti(posizioni, db)
+    posizioni_by_doc = _build_posizioni_index(posizioni)
+
+    offerte_r = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
+    for p in import_offerte_stream(offerte, posizioni_by_doc, offerte_vinte, db, mara_lookup):
+        offerte_r = p
+    offerte_r = {k: offerte_r[k] for k in ["inserted", "updated", "identical", "skipped"]}
+
+    ordini_r = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
+    for p in import_ordini_stream(ordini, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
+        ordini_r = p
+    ordini_r = {k: ordini_r[k] for k in ["inserted", "updated", "identical", "skipped"]}
+
+    return {"companies": companies_r, "prodotti": prodotti_r, "offerte": offerte_r, "ordini": ordini_r}

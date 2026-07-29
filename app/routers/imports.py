@@ -801,7 +801,7 @@ async def import_sap_stream(
         from app.services.sap_import_service import (
             load_csv_bytes, load_mara_lookup, _flusso_series,
             import_companies_stream, import_prodotti_stream,
-            import_offerte_stream, import_ordini_stream,
+            import_offerte_stream, import_ordini_stream, _build_posizioni_index,
         )
         db = SessionLocal()
         try:
@@ -852,10 +852,14 @@ async def import_sap_stream(
                 yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo prodotti...", "stats": {"companies": companies_stats, "prodotti": partial}}) + "\n"
                 prodotti_stats = partial
 
+            # Indice posizioni costruito una sola volta — poi il DF viene liberato
+            posizioni_by_doc = _build_posizioni_index(posizioni)
+            del posizioni; gc.collect()
+
             # Offerte 60% → 80%
             offerte_stats = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": len(offerte_df), "processed": len(offerte_df)}
             if len(offerte_df) > 0:
-                for partial in import_offerte_stream(offerte_df, posizioni, offerte_vinte, db, mara_lookup):
+                for partial in import_offerte_stream(offerte_df, posizioni_by_doc, offerte_vinte, db, mara_lookup):
                     pct = 60 + int((partial["processed"] / max(partial["total"], 1)) * 20)
                     yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo offerte...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": partial}}) + "\n"
                     offerte_stats = partial
@@ -865,11 +869,11 @@ async def import_sap_stream(
 
             # Ordini 80% → 99%
             ordini_stats = dict(_zero)
-            for partial in import_ordini_stream(ordini_df, posizioni, offerta_per_ordine, db, mara_lookup):
+            for partial in import_ordini_stream(ordini_df, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
                 pct = 80 + int((partial["processed"] / max(partial["total"], 1)) * 19)
                 yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}}) + "\n"
                 ordini_stats = partial
-            del ordini_df, posizioni; gc.collect()
+            del ordini_df, posizioni_by_doc; gc.collect()
 
             yield json.dumps({"type": "done", "pct": 100, "stats": {
                 "companies": companies_stats,
