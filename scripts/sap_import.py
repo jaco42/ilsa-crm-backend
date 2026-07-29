@@ -50,6 +50,64 @@ SEP = "|"
 STAGE_VINTO = "Chiuso Vinto"
 STAGE_OFFERTA = "Offerta Mandata"
 
+# ---------------------------------------------------------------------------
+# Gerarchia prodotti → L1 (gr_merci) / L2 (categoria)
+# ---------------------------------------------------------------------------
+
+_COTTURA_L2 = {
+    "CUC": "Cucine",               "FOR": "Forni",
+    "FRY": "Frytop",               "GRI": "Griglie",
+    "GRE": "Griglie",              "FRI": "Friggitrici",
+    "BRA": "Brasiere",             "TPS": "Teppanyaki / Piastre",
+    "CUP": "Cuocipasta",           "PAS": "Cuocipasta",
+    "BAG": "Bagnomaria",           "PEN": "Pentoloni",
+    "COC": "Cuoci legumi",         "NEU": "Neutri cottura",
+    "CAP": "Cappe cottura",
+}
+_REFRG_L2 = {
+    "ARM": "Armadi frigoriferi",   "TAV": "Tavoli refrigerati",
+    "VET": "Vetrine refrigerate",  "ABO": "Abbattitori",
+    "ACF": "Abbattitori / Congelatori",
+}
+_PSVEN_L2 = {
+    "COT": "Ricambi Cottura",      "FRE": "Ricambi Freddo",
+    "NEU": "Ricambi Neutro",       "COM": "Ricambi Comuni",
+}
+
+
+def _gerarchia_to_famiglia(g: str):
+    """Restituisce (L1, L2) da un codice Gerarchia prodotti SAP."""
+    if not g:
+        return None, None
+    if g.startswith("COPF") or g.startswith("COTT"):
+        import re
+        m = re.match(r"COPF[COPRZ]?([A-Z]{3})\d+", g) or re.match(r"COTT_?([A-Z]{3})\d+", g)
+        l2 = _COTTURA_L2.get(m.group(1), "Accessori cottura") if m else "Accessori cottura"
+        return "Cottura", l2
+    if g.startswith("CAPPE"):
+        return "Cappe", "Cappe aspirazione"
+    if g.startswith("REFRG"):
+        parts = g.split("_")
+        key = parts[1][:3] if len(parts) > 1 else ""
+        return "Refrigerazione", _REFRG_L2.get(key, "Refrigerazione altro")
+    if g.startswith("GN_"):
+        return "Neutro", "Grandi Neutrali"
+    if g.startswith("PS_NE"):
+        return "Neutro", "Piani di Servizio"
+    if g.startswith("PZ_NE"):
+        return "Neutro", "Pezzi / Accessori Neutro"
+    if g.startswith("LAVA_"):
+        return "Lavaggio", "Lavastoviglie"
+    if g.startswith("SELF_"):
+        return "Self Service", "Self service"
+    if g.startswith("PSVEN"):
+        parts = g.split("_")
+        key = parts[1][:3] if len(parts) > 1 else ""
+        return "Ricambi", _PSVEN_L2.get(key, "Parti di ricambio")
+    if g.startswith("SPEC_"):
+        return "Speciali", "Progetti speciali"
+    return "Varie", "Varie / Altro"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -312,6 +370,7 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
         db.query(OfferLineItem).filter(OfferLineItem.opportunity_id == opp.id).delete()
         for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
             codice = get(riga, "Materiale")
+            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
             db.add(OfferLineItem(
                 opportunity_id=opp.id,
                 codice_sap=codice or None,
@@ -320,6 +379,8 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
                 unita_misura=get(riga, "UM") or None,
                 prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
                 totale_riga=parse_decimal(get(riga, "Val.netto")),
+                gr_merci=l1,
+                categoria=l2,
             ))
 
     db.commit()
@@ -379,6 +440,7 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
         db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
         for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
             codice = get(riga, "Materiale")
+            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
             db.add(OrderLineItem(
                 order_id=order.id,
                 codice_sap=codice or None,
@@ -387,6 +449,8 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
                 unita_misura=get(riga, "UM") or None,
                 prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
                 totale_riga=parse_decimal(get(riga, "Val.netto")),
+                gr_merci=l1,
+                categoria=l2,
             ))
 
     db.commit()

@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, select, exists
 from app.database import get_db
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
@@ -12,7 +12,7 @@ from app.auth import get_current_user
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
 
-def _apply_order_filters(q, agente, dal, al, valore_min, valore_max):
+def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=None, categoria=None):
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
     if dal:
@@ -23,6 +23,15 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max):
         q = q.filter(Order.valore_totale >= valore_min)
     if valore_max is not None:
         q = q.filter(Order.valore_totale <= valore_max)
+    if gr_merci or categoria:
+        sub = select(OrderLineItem.order_id).where(
+            OrderLineItem.order_id == Order.id
+        ).correlate(Order)
+        if gr_merci:
+            sub = sub.where(OrderLineItem.gr_merci == gr_merci)
+        if categoria:
+            sub = sub.where(OrderLineItem.categoria == categoria)
+        q = q.filter(exists(sub))
     return q
 
 
@@ -34,25 +43,45 @@ def stats_ordini(
     al: date = Query(None),
     valore_min: float = Query(None),
     valore_max: float = Query(None),
+    gr_merci: str = Query(None),
+    categoria: str = Query(None),
+    kpi_dal: date = Query(None),
+    kpi_al: date = Query(None),
     db: Session = Depends(get_db),
 ):
     q = db.query(Order)
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=gr_merci, categoria=categoria)
 
-    row = q.with_entities(
-        func.count(Order.id),
-        func.coalesce(func.sum(Order.valore_totale), 0),
-        func.count(Order.opportunity_id),
-    ).one()
-    totale, valore_totale, da_offerte = row
+    totale = q.count()
+
+    q_ytd = q
+    if kpi_dal:
+        q_ytd = q_ytd.filter(Order.data_ordine >= kpi_dal)
+    if kpi_al:
+        q_ytd = q_ytd.filter(Order.data_ordine <= kpi_al)
+
+    q_joined = q_ytd.join(OrderLineItem, OrderLineItem.order_id == Order.id)
+    if gr_merci:
+        q_joined = q_joined.filter(OrderLineItem.gr_merci == gr_merci)
+    if categoria:
+        q_joined = q_joined.filter(OrderLineItem.categoria == categoria)
+    totale_ytd, valore_totale, da_offerte = (
+        q_joined.with_entities(
+            func.count(func.distinct(Order.id)),
+            func.coalesce(func.sum(OrderLineItem.totale_riga), 0),
+            func.count(func.distinct(Order.opportunity_id)),
+        ).one()
+    )
+
     return {
         "totale": totale,
+        "totale_ytd": totale_ytd,
         "valore_totale": float(valore_totale),
-        "valore_medio": float(valore_totale / totale) if totale else 0,
+        "valore_medio": float(valore_totale / totale_ytd) if totale_ytd else 0,
         "da_offerte": da_offerte,
-        "diretti": totale - da_offerte,
+        "diretti": totale_ytd - da_offerte,
     }
 
 
@@ -64,6 +93,8 @@ def lista_ordini(
     al: date = Query(None),
     valore_min: float = Query(None),
     valore_max: float = Query(None),
+    gr_merci: str = Query(None),
+    categoria: str = Query(None),
     search: str = Query(None),
     limit: int = Query(100),
     offset: int = Query(0),
@@ -72,7 +103,7 @@ def lista_ordini(
     q = db.query(Order).options(joinedload(Order.company))
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=gr_merci, categoria=categoria)
     if search:
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(

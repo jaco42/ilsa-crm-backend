@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models.company import Company
 from app.models.opportunity import Opportunity
 from app.models.order import Order
+from app.models.order_line_item import OrderLineItem
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(get_current_user)])
@@ -40,6 +41,10 @@ def lista_aziende(
     con_offerte_scadute: bool = Query(None),
     con_offerte_vinte: bool = Query(None),
     con_offerte_perse: bool = Query(None),
+    min_valore_offerte_attive: float = Query(None),
+    max_valore_offerte_attive: float = Query(None),
+    min_valore_offerte_scadute: float = Query(None),
+    max_valore_offerte_scadute: float = Query(None),
     min_ordini: int = Query(None),
     max_ordini: int = Query(None),
     min_valore: float = Query(None),
@@ -49,16 +54,19 @@ def lista_aziende(
 ):
     today = date.today()
 
+    attiva_cond = (
+        (Opportunity.stage == "Offerta Mandata") &
+        ((Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None))
+    )
+    scaduta_cond = (
+        (Opportunity.stage == "Offerta Mandata") & (Opportunity.data_scadenza < today)
+    )
     opp_q = db.query(
         Opportunity.company_id,
-        func.count(case((
-            (Opportunity.stage == "Offerta Mandata") &
-            ((Opportunity.data_scadenza >= today) | (Opportunity.data_scadenza == None)),
-            1
-        ))).label("offerte_attive"),
-        func.count(case((
-            (Opportunity.stage == "Offerta Mandata") & (Opportunity.data_scadenza < today), 1
-        ))).label("offerte_scadute"),
+        func.count(case((attiva_cond, 1))).label("offerte_attive"),
+        func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0).label("valore_offerte_attive"),
+        func.count(case((scaduta_cond, 1))).label("offerte_scadute"),
+        func.coalesce(func.sum(case((scaduta_cond, Opportunity.valore_totale))), 0).label("valore_offerte_scadute"),
         func.count(case((Opportunity.stage == "Chiuso Vinto", 1))).label("offerte_vinte"),
         func.count(case((Opportunity.stage == "Chiuso Perso", 1))).label("offerte_perse"),
     )
@@ -68,10 +76,13 @@ def lista_aziende(
         opp_q = opp_q.filter(Opportunity.data_creazione_sap <= date_to)
     opp_stats = opp_q.group_by(Opportunity.company_id).subquery()
 
-    order_q = db.query(
-        Order.company_id,
-        func.count(Order.id).label("ordini_totali"),
-        func.coalesce(func.sum(Order.valore_totale), 0).label("valore_ordini"),
+    order_q = (
+        db.query(
+            Order.company_id,
+            func.count(func.distinct(Order.id)).label("ordini_totali"),
+            func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore_ordini"),
+        )
+        .join(OrderLineItem, OrderLineItem.order_id == Order.id)
     )
     if date_from:
         order_q = order_q.filter(Order.data_ordine >= date_from)
@@ -95,7 +106,9 @@ def lista_aziende(
         db.query(
             Company,
             func.coalesce(opp_stats.c.offerte_attive, 0).label("offerte_attive"),
+            func.coalesce(opp_stats.c.valore_offerte_attive, 0).label("valore_offerte_attive"),
             func.coalesce(opp_stats.c.offerte_scadute, 0).label("offerte_scadute"),
+            func.coalesce(opp_stats.c.valore_offerte_scadute, 0).label("valore_offerte_scadute"),
             func.coalesce(opp_stats.c.offerte_vinte, 0).label("offerte_vinte"),
             func.coalesce(opp_stats.c.offerte_perse, 0).label("offerte_perse"),
             func.coalesce(order_stats.c.ordini_totali, 0).label("ordini_totali"),
@@ -115,6 +128,8 @@ def lista_aziende(
     if status:
         if status == "lead":
             q = q.filter(Company.sap_customer_id == None, Company.status != "cliente")
+        elif status in ("prospect", "potenziale"):
+            q = q.filter(Company.sap_customer_id != None, Company.status != "cliente")
         else:
             q = q.filter(Company.status == status)
     if paese:
@@ -149,6 +164,14 @@ def lista_aziende(
         q = q.filter(func.coalesce(opp_stats.c.offerte_vinte, 0) >= 1)
     if con_offerte_perse:
         q = q.filter(func.coalesce(opp_stats.c.offerte_perse, 0) >= 1)
+    if min_valore_offerte_attive is not None:
+        q = q.filter(func.coalesce(opp_stats.c.valore_offerte_attive, 0) >= min_valore_offerte_attive)
+    if max_valore_offerte_attive is not None:
+        q = q.filter(func.coalesce(opp_stats.c.valore_offerte_attive, 0) <= max_valore_offerte_attive)
+    if min_valore_offerte_scadute is not None:
+        q = q.filter(func.coalesce(opp_stats.c.valore_offerte_scadute, 0) >= min_valore_offerte_scadute)
+    if max_valore_offerte_scadute is not None:
+        q = q.filter(func.coalesce(opp_stats.c.valore_offerte_scadute, 0) <= max_valore_offerte_scadute)
     if min_ordini is not None:
         q = q.filter(func.coalesce(order_stats.c.ordini_totali, 0) >= min_ordini)
     if max_ordini is not None:
@@ -176,7 +199,9 @@ def lista_aziende(
         "offerte_attive":        func.coalesce(opp_stats.c.offerte_attive, 0),
         "offerte_scadute":       func.coalesce(opp_stats.c.offerte_scadute, 0),
         "offerte_vinte":         func.coalesce(opp_stats.c.offerte_vinte, 0),
-        "offerte_perse":         func.coalesce(opp_stats.c.offerte_perse, 0),
+        "offerte_perse":          func.coalesce(opp_stats.c.offerte_perse, 0),
+        "valore_offerte_attive":  func.coalesce(opp_stats.c.valore_offerte_attive, 0),
+        "valore_offerte_scadute": func.coalesce(opp_stats.c.valore_offerte_scadute, 0),
         "ordini_totali":         func.coalesce(order_stats.c.ordini_totali, 0),
         "valore_ordini":         func.coalesce(order_stats.c.valore_ordini, 0),
         "ultima_interazione_sap": func.greatest(last_opp.c.last_date, last_order.c.last_date),
@@ -203,7 +228,9 @@ def lista_aziende(
             "indirizzo": c.indirizzo,
             "cap": c.cap,
             "offerte_attive": int(row.offerte_attive),
+            "valore_offerte_attive": float(row.valore_offerte_attive),
             "offerte_scadute": int(row.offerte_scadute),
+            "valore_offerte_scadute": float(row.valore_offerte_scadute),
             "offerte_vinte": int(row.offerte_vinte),
             "offerte_perse": int(row.offerte_perse),
             "offerte_totali": int(row.offerte_attive) + int(row.offerte_scadute) + int(row.offerte_vinte) + int(row.offerte_perse),

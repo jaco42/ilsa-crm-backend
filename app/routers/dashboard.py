@@ -5,6 +5,7 @@ from sqlalchemy import func, case
 from app.database import get_db
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
+from app.models.offer_line_item import OfferLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user
@@ -28,6 +29,8 @@ def dashboard_chart(
     metrica: str = Query("fatturato"),
     data_dim: str = Query("ordine"),  # ordine | offerta | cliente (solo per fatturato)
     gr_merci: str = Query(None),      # filtro per famiglia (usa OrderLineItem.gr_merci)
+    categoria: str = Query(None),     # filtro per categoria L2 (usa OrderLineItem.categoria)
+    company_id: str = Query(None),    # filtra per singola azienda
     db: Session = Depends(get_db),
 ):
     months_back = 36 if tf == "3A" else 12
@@ -36,8 +39,15 @@ def dashboard_chart(
     period_fn = "quarter" if by_quarter else "month"
 
     if metrica == "fatturato":
-        if gr_merci:
+        if gr_merci or categoria:
             date_col = Order.data_ordine
+            li_filters = [date_col >= since, date_col.isnot(None)]
+            if gr_merci:
+                li_filters.append(OrderLineItem.gr_merci == gr_merci)
+            if categoria:
+                li_filters.append(OrderLineItem.categoria == categoria)
+            if company_id:
+                li_filters.append(Order.company_id == company_id)
             q = (
                 db.query(
                     func.extract("year", date_col).label("anno"),
@@ -45,7 +55,7 @@ def dashboard_chart(
                     func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
                 )
                 .join(OrderLineItem, OrderLineItem.order_id == Order.id)
-                .filter(date_col >= since, date_col.isnot(None), OrderLineItem.gr_merci == gr_merci)
+                .filter(*li_filters)
             )
         elif data_dim == "cliente":
             date_col = Company.sap_created_at
@@ -53,9 +63,10 @@ def dashboard_chart(
                 db.query(
                     func.extract("year", date_col).label("anno"),
                     func.extract(period_fn, date_col).label("periodo"),
-                    func.coalesce(func.sum(Order.valore_totale), 0).label("valore"),
+                    func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
                 )
                 .join(Company, Order.company_id == Company.id)
+                .join(OrderLineItem, OrderLineItem.order_id == Order.id)
                 .filter(date_col >= since, date_col.isnot(None))
             )
         else:
@@ -64,10 +75,13 @@ def dashboard_chart(
                 db.query(
                     func.extract("year", date_col).label("anno"),
                     func.extract(period_fn, date_col).label("periodo"),
-                    func.coalesce(func.sum(Order.valore_totale), 0).label("valore"),
+                    func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
                 )
+                .join(OrderLineItem, OrderLineItem.order_id == Order.id)
                 .filter(date_col >= since, date_col.isnot(None))
             )
+            if company_id:
+                q = q.filter(Order.company_id == company_id)
 
     elif metrica == "offerte":
         date_col = Opportunity.data_creazione_sap
@@ -79,6 +93,8 @@ def dashboard_chart(
             )
             .filter(date_col >= since, date_col.isnot(None))
         )
+        if company_id:
+            q = q.filter(Opportunity.company_id == company_id)
 
     elif metrica == "nuovi_clienti":
         date_col = Company.sap_created_at
@@ -115,7 +131,8 @@ def dashboard_kpi(
     today = date.today()
 
     fatturato = float(
-        db.query(func.coalesce(func.sum(Order.valore_totale), 0))
+        db.query(func.coalesce(func.sum(OrderLineItem.totale_riga), 0))
+        .join(Order, OrderLineItem.order_id == Order.id)
         .filter(Order.data_ordine >= dal, Order.data_ordine <= al)
         .scalar() or 0
     )
@@ -171,64 +188,117 @@ def dashboard_kpi(
 def dashboard_per_famiglia(
     dal: date = Query(...),
     al: date = Query(...),
+    company_id: str = Query(None),
     db: Session = Depends(get_db),
 ):
-    # Fatturato per gr_merci dalle righe ordine nel periodo
+    ord_filters = [
+        Order.data_ordine >= dal,
+        Order.data_ordine <= al,
+        OrderLineItem.gr_merci.isnot(None),
+        OrderLineItem.gr_merci != "",
+    ]
+    if company_id:
+        ord_filters.append(Order.company_id == company_id)
+
     rows = (
         db.query(
             OrderLineItem.gr_merci.label("famiglia"),
             func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
-            func.count(OrderLineItem.id).label("righe"),
+            func.count(func.distinct(Order.id)).label("ordini"),
         )
         .join(Order, OrderLineItem.order_id == Order.id)
-        .filter(
-            Order.data_ordine >= dal,
-            Order.data_ordine <= al,
-            OrderLineItem.gr_merci.isnot(None),
-            OrderLineItem.gr_merci != "",
-        )
+        .filter(*ord_filters)
         .group_by(OrderLineItem.gr_merci)
         .order_by(func.sum(OrderLineItem.totale_riga).desc())
         .all()
     )
+
+    opp_filters = [
+        Opportunity.data_creazione_sap >= dal,
+        Opportunity.data_creazione_sap <= al,
+        OfferLineItem.gr_merci.isnot(None),
+        OfferLineItem.gr_merci != "",
+    ]
+    if company_id:
+        opp_filters.append(Opportunity.company_id == company_id)
+
+    offerte_rows = (
+        db.query(
+            OfferLineItem.gr_merci.label("famiglia"),
+            func.count(func.distinct(Opportunity.id)).label("offerte"),
+        )
+        .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
+        .filter(*opp_filters)
+        .group_by(OfferLineItem.gr_merci)
+        .all()
+    )
+    offerte_map = {r.famiglia: int(r.offerte) for r in offerte_rows}
 
     totale = sum(float(r.fatturato) for r in rows)
 
     result = []
     for r in rows:
         fat = float(r.fatturato)
-        # Sub-breakdown per codice_sap / descrizione
+        famiglia = r.famiglia
+
+        sub_filters = [
+            Order.data_ordine >= dal,
+            Order.data_ordine <= al,
+            OrderLineItem.gr_merci == famiglia,
+            OrderLineItem.categoria.isnot(None),
+            OrderLineItem.categoria != "",
+        ]
+        if company_id:
+            sub_filters.append(Order.company_id == company_id)
+
         sub_rows = (
             db.query(
-                OrderLineItem.codice_sap,
-                OrderLineItem.descrizione_riga,
+                OrderLineItem.categoria.label("categoria"),
                 func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
-                func.count(OrderLineItem.id).label("righe"),
+                func.count(func.distinct(Order.id)).label("ordini"),
             )
             .join(Order, OrderLineItem.order_id == Order.id)
-            .filter(
-                Order.data_ordine >= dal,
-                Order.data_ordine <= al,
-                OrderLineItem.gr_merci == r.famiglia,
-            )
-            .group_by(OrderLineItem.codice_sap, OrderLineItem.descrizione_riga)
+            .filter(*sub_filters)
+            .group_by(OrderLineItem.categoria)
             .order_by(func.sum(OrderLineItem.totale_riga).desc())
-            .limit(10)
             .all()
         )
 
+        sub_opp_filters = [
+            Opportunity.data_creazione_sap >= dal,
+            Opportunity.data_creazione_sap <= al,
+            OfferLineItem.gr_merci == famiglia,
+            OfferLineItem.categoria.isnot(None),
+            OfferLineItem.categoria != "",
+        ]
+        if company_id:
+            sub_opp_filters.append(Opportunity.company_id == company_id)
+
+        sub_offerte_rows = (
+            db.query(
+                OfferLineItem.categoria.label("categoria"),
+                func.count(func.distinct(Opportunity.id)).label("offerte"),
+            )
+            .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
+            .filter(*sub_opp_filters)
+            .group_by(OfferLineItem.categoria)
+            .all()
+        )
+        sub_offerte_map = {row.categoria: int(row.offerte) for row in sub_offerte_rows}
+
         result.append({
-            "famiglia": r.famiglia,
+            "famiglia": famiglia,
             "fatturato": fat,
-            "righe": int(r.righe),
+            "ordini": int(r.ordini),
+            "offerte": offerte_map.get(famiglia, 0),
             "pct": round(fat / totale * 100) if totale else 0,
             "sub": [
                 {
-                    "cat": s.descrizione_riga or s.codice_sap or "—",
-                    "codice": s.codice_sap,
+                    "categoria": s.categoria or "—",
                     "fatturato": float(s.fatturato),
-                    "righe": int(s.righe),
-                    "pct": round(float(s.fatturato) / fat * 100) if fat else 0,
+                    "ordini": int(s.ordini),
+                    "offerte": sub_offerte_map.get(s.categoria, 0),
+                    "pct": round(float(s.fatturato) / totale * 100) if totale else 0,
                 }
                 for s in sub_rows
             ],
