@@ -23,7 +23,26 @@ STAGE_VINTO = "Chiuso Vinto"
 STAGE_OFFERTA = "Offerta Mandata"
 
 
-def load_csv_bytes(content: bytes) -> pd.DataFrame:
+# Colonne necessarie per file — usecols riduce il DF in memoria del 80-97%
+_KNA1_COLS = {"Cliente", "Nome 1", "Nome 2", "Partita IVA 1", "Part.IVA", "Partita IVA",
+              "Via", "Località", "Localit?", "CAP", "Rg", "Pse", "Telefono 1", "Data ap."}
+_VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc."}
+_VBAP_COLS = {"Doc. vend.", "Materiale", "Definizione",
+              "Qtà ordine", "Qt? ordine", "Qt ordine", "UM", "Prz. netto", "Val.netto",
+              "Gerarchia prodotti"}
+_VBFA_COLS = {"Doc.prec.", "Doc. prec.", "Doc. succ.", "Doc.succ."}
+_MARA_COLS = {"Materiale", "MATNR", "Gr.merci", "Gruppo merci", "MATKL", "Gr. merci"}
+
+FILE_COLS = {
+    "kna1": _KNA1_COLS,
+    "vbak": _VBAK_COLS,
+    "vbap": _VBAP_COLS,
+    "vbfa": _VBFA_COLS,
+    "mara": _MARA_COLS,
+}
+
+
+def load_csv_bytes(content: bytes, file_type: str = None) -> pd.DataFrame:
     # Auto-detect separator: alcuni export SAP usano tab invece di |
     try:
         sample = content.decode(ENCODING, errors="replace")
@@ -33,9 +52,13 @@ def load_csv_bytes(content: bytes) -> pd.DataFrame:
     probe = lines[3] if len(lines) > 3 else (lines[0] if lines else "")
     sep = "\t" if probe.count("\t") > probe.count("|") else SEP
 
+    needed = FILE_COLS.get(file_type) if file_type else None
+    usecols = (lambda c: c.strip().strip("|").strip() in needed) if needed else None
+
     df = pd.read_csv(
         io.BytesIO(content), sep=sep, dtype=str, encoding=ENCODING,
         skiprows=3, skipinitialspace=True, on_bad_lines="skip", quoting=3,
+        usecols=usecols,
     )
     df.columns = df.columns.str.strip().str.strip("|")
     for col in df.columns:
@@ -92,9 +115,9 @@ def _flusso_series(df: pd.DataFrame, *candidates: str) -> pd.Series:
 
 
 def load_mara_lookup(content: bytes) -> dict:
-    """Ritorna {codice_sap: gr_merci} da MARA.CSV."""
+    """Ritorna {codice_sap: gr_merci} da MARA.CSV (solo 2 colonne in memoria)."""
     try:
-        df = load_csv_bytes(content)
+        df = load_csv_bytes(content, file_type="mara")
     except Exception:
         return {}
     lookup = {}

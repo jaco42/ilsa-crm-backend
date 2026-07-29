@@ -784,14 +784,14 @@ async def import_sap_stream(
         raise HTTPException(status_code=500, detail="pandas non installato sul server")
 
     try:
-        # Raccogliamo i bytes in un dict: il generatore li libera via .pop() man mano
+        # mara incluso nel dict così il generatore lo libera via .pop() subito dopo il lookup
         file_bytes = {
+            "mara": await mara.read() if mara else b"",
             "kna1": await kna1.read(),
             "vbak": await vbak.read(),
-            "vbap": await vbap.read(),
             "vbfa": await vbfa.read(),
+            "vbap": await vbap.read(),  # il più pesante, caricato per ultimo
         }
-        mara_bytes = await mara.read() if mara else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
 
@@ -799,19 +799,23 @@ async def import_sap_stream(
         import gc
         from app.database import SessionLocal
         from app.services.sap_import_service import (
-            load_csv_bytes, load_mara_lookup, import_companies_stream, import_prodotti_stream,
+            load_csv_bytes, load_mara_lookup, _flusso_series,
+            import_companies_stream, import_prodotti_stream,
             import_offerte_stream, import_ordini_stream,
         )
         db = SessionLocal()
         try:
             yield json.dumps({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."}) + "\n"
 
-            mara_lookup = load_mara_lookup(mara_bytes) if mara_bytes else {}
+            # MARA: carica solo 2 colonne, poi libera i bytes subito
+            mara_b = file_bytes.pop("mara")
+            mara_lookup = load_mara_lookup(mara_b) if mara_b else {}
+            del mara_b; gc.collect()
 
             _zero = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": 0, "processed": 0}
 
-            # --- Companies 15% → 45% (carica e libera KNA1) ---
-            clienti = load_csv_bytes(file_bytes.pop("kna1")); gc.collect()
+            # --- Companies 15% → 45% (KNA1: ~10 colonne su ~50) ---
+            clienti = load_csv_bytes(file_bytes.pop("kna1"), file_type="kna1"); gc.collect()
             companies_stats = dict(_zero)
             for partial in import_companies_stream(clienti, db):
                 pct = 15 + int((partial["processed"] / max(partial["total"], 1)) * 30)
@@ -819,15 +823,14 @@ async def import_sap_stream(
                 companies_stats = partial
             del clienti; gc.collect()
 
-            # --- Split VBAK in offerte/ordini, poi libera VBAK ---
-            docvend = load_csv_bytes(file_bytes.pop("vbak")); gc.collect()
+            # --- Split VBAK in offerte/ordini (6 colonne su ~40) ---
+            docvend = load_csv_bytes(file_bytes.pop("vbak"), file_type="vbak"); gc.collect()
             offerte_df = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
             ordini_df  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
             del docvend; gc.collect()
 
-            # --- Estrai dicts da VBFA, poi libera VBFA ---
-            from app.services.sap_import_service import _flusso_series
-            flusso = load_csv_bytes(file_bytes.pop("vbfa")); gc.collect()
+            # --- VBFA: solo 2 colonne, estrai dicts e libera ---
+            flusso = load_csv_bytes(file_bytes.pop("vbfa"), file_type="vbfa"); gc.collect()
             prec = _flusso_series(flusso, "Doc.prec.", "Doc. prec.")
             succ = _flusso_series(flusso, "Doc. succ.", "Doc.succ.")
             offerte_vinte      = set(prec.unique())
@@ -835,12 +838,12 @@ async def import_sap_stream(
             del flusso, prec, succ; gc.collect()
 
             yield json.dumps({
-                "type": "progress", "pct": 12,
+                "type": "progress", "pct": 44,
                 "fase": f"Aziende ok — VBAK: {len(offerte_df)} offerte + {len(ordini_df)} ordini",
             }) + "\n"
 
-            # --- Prodotti + Offerte + Ordini condividono VBAP ---
-            posizioni = load_csv_bytes(file_bytes.pop("vbap")); gc.collect()
+            # --- VBAP: 9 colonne su ~40, caricato per ultimo quando tutto il resto è libero ---
+            posizioni = load_csv_bytes(file_bytes.pop("vbap"), file_type="vbap"); gc.collect()
 
             # Prodotti 45% → 60%
             prodotti_stats = dict(_zero)
