@@ -9,7 +9,7 @@ from app.models.order import Order
 from app.models.company import Company
 from app.auth import get_current_user
 from app.services import funnel_service
-from app.services.opportunity_stats import opportunity_stats as _opp_stats, build_scaduta_attiva, STAGE_PERSA as _STAGE_PERSA
+from app.services.opportunity_stats import win_rate_from_query, build_scaduta_attiva, STAGE_PERSA as _STAGE_PERSA
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"], dependencies=[Depends(get_current_user)])
 
@@ -56,27 +56,24 @@ def stats_opportunity(
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al)
 
-    totale, valore_tot, vinte, perse, scadute, attive, valore_vinto, valore_perso, valore_pipeline = q.with_entities(
+    wr = win_rate_from_query(q, today)
+
+    totale, valore_tot, valore_vinto, valore_perso, valore_pipeline = q.with_entities(
         func.count(Opportunity.id),
         func.coalesce(func.sum(Opportunity.valore_totale), 0),
-        func.count(case((Opportunity.stage == 'Chiuso Vinto', 1))),
-        func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
-        func.count(case((scaduta_cond, 1))),
-        func.count(case((attiva_cond, 1))),
         func.coalesce(func.sum(case((Opportunity.stage == 'Chiuso Vinto', Opportunity.valore_totale))), 0),
         func.coalesce(func.sum(case((Opportunity.stage.in_(STAGE_PERSA) | scaduta_cond, Opportunity.valore_totale))), 0),
         func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0),
     ).one()
 
-    chiuse = vinte + perse + scadute
     return {
         "totale": totale,
-        "vinte": vinte,
-        "perse": perse,
-        "scadute": scadute,
-        "attive": attive,
-        "chiuse": chiuse,
-        "tasso_successo": round(vinte / chiuse * 100) if chiuse else None,
+        "vinte": wr["vinte"],
+        "perse": wr["perse"],
+        "scadute": wr["scadute"],
+        "attive": wr["attive"],
+        "chiuse": wr["chiuse"],
+        "tasso_successo": wr["tasso_successo"],
         "valore_pipeline": float(valore_pipeline),
         "valore_vinto": float(valore_vinto),
         "valore_perso": float(valore_perso),

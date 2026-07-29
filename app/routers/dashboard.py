@@ -8,7 +8,7 @@ from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user
-from app.services.opportunity_stats import opportunity_stats as _opp_stats, build_scaduta_attiva
+from app.services.opportunity_stats import win_rate_from_query, build_scaduta_attiva
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_user)])
 
@@ -125,8 +125,11 @@ def dashboard_kpi(
         .scalar() or 0
     )
 
-    stats = _opp_stats(db, today, creazione_dal=dal, creazione_al=al)
-    win_rate = stats["tasso_successo"]
+    q_opp = db.query(Opportunity).filter(
+        Opportunity.data_creazione_sap >= dal,
+        Opportunity.data_creazione_sap <= al,
+    )
+    win_rate = win_rate_from_query(q_opp, today)["tasso_successo"]
 
     _, attiva_cond = build_scaduta_attiva(today)
     pipeline_valore = float(
