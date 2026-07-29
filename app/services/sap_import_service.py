@@ -23,7 +23,10 @@ STAGE_VINTO = "Chiuso Vinto"
 STAGE_OFFERTA = "Offerta Mandata"
 
 
-# Colonne necessarie per file — usecols riduce il DF in memoria del 80-97%
+# ---------------------------------------------------------------------------
+# usecols — carica solo le colonne necessarie (-80÷97% RAM per DF)
+# ---------------------------------------------------------------------------
+
 _KNA1_COLS = {"Cliente", "Nome 1", "Nome 2", "Partita IVA 1", "Part.IVA", "Partita IVA",
               "Via", "Località", "Localit?", "CAP", "Rg", "Pse", "Telefono 1", "Data ap."}
 _VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc."}
@@ -34,16 +37,12 @@ _VBFA_COLS = {"Doc.prec.", "Doc. prec.", "Doc. succ.", "Doc.succ."}
 _MARA_COLS = {"Materiale", "MATNR", "Gr.merci", "Gruppo merci", "MATKL", "Gr. merci"}
 
 FILE_COLS = {
-    "kna1": _KNA1_COLS,
-    "vbak": _VBAK_COLS,
-    "vbap": _VBAP_COLS,
-    "vbfa": _VBFA_COLS,
-    "mara": _MARA_COLS,
+    "kna1": _KNA1_COLS, "vbak": _VBAK_COLS, "vbap": _VBAP_COLS,
+    "vbfa": _VBFA_COLS, "mara": _MARA_COLS,
 }
 
 
 def load_csv_bytes(content: bytes, file_type: str = None) -> pd.DataFrame:
-    # Auto-detect separator: alcuni export SAP usano tab invece di |
     try:
         sample = content.decode(ENCODING, errors="replace")
     except Exception:
@@ -69,6 +68,63 @@ def load_csv_bytes(content: bytes, file_type: str = None) -> pd.DataFrame:
             df[col] = s.str.strip().str.strip("|")
     return df.fillna("")
 
+
+# ---------------------------------------------------------------------------
+# Gerarchia prodotti → L1 / L2 (identico allo script locale)
+# ---------------------------------------------------------------------------
+
+_COTTURA_L2 = {
+    "CUC": "Cucine",    "FOR": "Forni",       "FRY": "Frytop",      "GRI": "Griglie",
+    "GRE": "Griglie",   "FRI": "Friggitrici", "BRA": "Brasiere",    "TPS": "Teppanyaki / Piastre",
+    "CUP": "Cuocipasta","PAS": "Cuocipasta",  "BAG": "Bagnomaria",  "PEN": "Pentoloni",
+    "COC": "Cuoci legumi","NEU": "Neutri cottura","CAP": "Cappe cottura",
+}
+_REFRG_L2 = {
+    "ARM": "Armadi frigoriferi", "TAV": "Tavoli refrigerati",
+    "VET": "Vetrine refrigerate","ABO": "Abbattitori","ACF": "Abbattitori / Congelatori",
+}
+_PSVEN_L2 = {
+    "COT": "Ricambi Cottura","FRE": "Ricambi Freddo",
+    "NEU": "Ricambi Neutro","COM": "Ricambi Comuni",
+}
+
+
+def _gerarchia_to_famiglia(g: str):
+    import re
+    if not g:
+        return None, None
+    if g.startswith("COPF") or g.startswith("COTT"):
+        m = re.match(r"COPF[COPRZ]?([A-Z]{3})\d+", g) or re.match(r"COTT_?([A-Z]{3})\d+", g)
+        l2 = _COTTURA_L2.get(m.group(1), "Accessori cottura") if m else "Accessori cottura"
+        return "Cottura", l2
+    if g.startswith("CAPPE"):
+        return "Cappe", "Cappe aspirazione"
+    if g.startswith("REFRG"):
+        parts = g.split("_")
+        key = parts[1][:3] if len(parts) > 1 else ""
+        return "Refrigerazione", _REFRG_L2.get(key, "Refrigerazione altro")
+    if g.startswith("GN_"):
+        return "Neutro", "Grandi Neutrali"
+    if g.startswith("PS_NE"):
+        return "Neutro", "Piani di Servizio"
+    if g.startswith("PZ_NE"):
+        return "Neutro", "Pezzi / Accessori Neutro"
+    if g.startswith("LAVA_"):
+        return "Lavaggio", "Lavastoviglie"
+    if g.startswith("SELF_"):
+        return "Self Service", "Self service"
+    if g.startswith("PSVEN"):
+        parts = g.split("_")
+        key = parts[1][:3] if len(parts) > 1 else ""
+        return "Ricambi", _PSVEN_L2.get(key, "Parti di ricambio")
+    if g.startswith("SPEC_"):
+        return "Speciali", "Progetti speciali"
+    return "Varie", "Varie / Altro"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def get(row, *names: str) -> str:
     for name in names:
@@ -104,7 +160,6 @@ def parse_date(val: str):
 
 
 def _flusso_series(df: pd.DataFrame, *candidates: str) -> pd.Series:
-    """Restituisce la prima colonna trovata tra i candidati (gestisce varianti SAP con/senza spazio)."""
     for c in candidates:
         if c in df.columns:
             return df[c].str.strip()
@@ -115,7 +170,7 @@ def _flusso_series(df: pd.DataFrame, *candidates: str) -> pd.Series:
 
 
 def load_mara_lookup(content: bytes) -> dict:
-    """Ritorna {codice_sap: gr_merci} da MARA.CSV (solo 2 colonne in memoria)."""
+    """Ritorna {codice_sap: gr_merci} da MARA (non più usato per L1/L2, tenuto per compat)."""
     try:
         df = load_csv_bytes(content, file_type="mara")
     except Exception:
@@ -164,14 +219,35 @@ def _changed(obj, field: str, new_val) -> bool:
     return str(current) != str(new_val)
 
 
+def _build_posizioni_index(posizioni: pd.DataFrame) -> dict:
+    """O(N) — elimina i DataFrame filter O(N×M) per ogni documento."""
+    index = {}
+    for _, riga in posizioni.iterrows():
+        doc_id = get(riga, "Doc. vend.")
+        if doc_id:
+            if doc_id not in index:
+                index[doc_id] = []
+            index[doc_id].append(riga)
+    return index
+
+
 # ---------------------------------------------------------------------------
 # Companies
 # ---------------------------------------------------------------------------
 
 def import_companies_stream(clienti: pd.DataFrame, db: Session):
-    """Generator: yields partial stats every ~200 rows."""
     inserted = updated = identical = skipped = 0
     total = len(clienti)
+
+    # Pre-carica tutti i record esistenti in 2 query invece di N
+    existing = {
+        c.sap_customer_id: c
+        for c in db.query(Company).filter(Company.sap_customer_id.isnot(None)).all()
+    }
+    secondaries = {}
+    for sec in db.query(CompanySapId).all():
+        if sec.company:
+            secondaries[sec.sap_customer_id] = sec.company
 
     for i, (_, row) in enumerate(clienti.iterrows()):
         codice_cliente = get(row, "Cliente")
@@ -205,25 +281,22 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
                     "created_by": "SAP",
                 }
 
-                company = db.query(Company).filter(Company.sap_customer_id == codice_cliente).first()
+                company = existing.get(codice_cliente)
                 row_handled = False
 
                 if not company:
-                    secondary = db.query(CompanySapId).filter(CompanySapId.sap_customer_id == codice_cliente).first()
-                    if secondary:
-                        s = secondary.company
+                    survivor = secondaries.get(codice_cliente)
+                    if survivor:
                         fill_fields = ["partita_iva", "indirizzo", "citta", "cap", "provincia", "paese", "tipo_attivita", "sap_created_at"]
-                        if not s.telefono_override:
+                        if not survivor.telefono_override:
                             fill_fields.append("telefono")
-                        if not s.email_override:
+                        if not survivor.email_override:
                             fill_fields.append("email")
-                        changed_fields = [f for f in fill_fields if not getattr(s, f) and data.get(f)]
+                        changed_fields = [f for f in fill_fields if not getattr(survivor, f) and data.get(f)]
                         for f in changed_fields:
-                            setattr(s, f, data[f])
-                        if changed_fields:
-                            updated += 1
-                        else:
-                            identical += 1
+                            setattr(survivor, f, data[f])
+                        updated += 1 if changed_fields else 0
+                        identical += 0 if changed_fields else 1
                         row_handled = True
 
                 if not row_handled:
@@ -250,6 +323,7 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
                             new_company = Company(**data)
                             db.add(new_company)
                             db.flush()
+                            existing[codice_cliente] = new_company
                             inserted += 1
                             if match is not None:
                                 reason, s_nome, s_via = score_match(match, new_company)
@@ -285,12 +359,16 @@ def import_prodotti_stream(posizioni: pd.DataFrame, db: Session):
     deduped = posizioni.drop_duplicates(subset=["Materiale"])
     total = len(deduped)
 
+    # Pre-carica tutti i prodotti esistenti in 1 query
+    existing = {p.codice_sap: p for p in db.query(Prodotto).all()}
+
+    to_insert = []
     for i, (_, row) in enumerate(deduped.iterrows()):
         codice = get(row, "Materiale")
         if not codice:
             continue
         nome = get(row, "Definizione") or codice
-        prodotto = db.query(Prodotto).filter(Prodotto.codice_sap == codice).first()
+        prodotto = existing.get(codice)
         if prodotto:
             if prodotto.nome != nome:
                 prodotto.nome = nome
@@ -298,13 +376,15 @@ def import_prodotti_stream(posizioni: pd.DataFrame, db: Session):
             else:
                 identical += 1
         else:
-            db.add(Prodotto(codice_sap=codice, nome=nome, attivo=True))
+            to_insert.append(Prodotto(codice_sap=codice, nome=nome, attivo=True))
             inserted += 1
 
-        if (i + 1) % 200 == 0 or i == total - 1:
+        if (i + 1) % 500 == 0 or i == total - 1:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": 0,
                    "processed": i + 1, "total": total}
 
+    if to_insert:
+        db.add_all(to_insert)
     db.commit()
     log.info(f"Prodotti:   {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici")
 
@@ -325,6 +405,18 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
     companies = _build_companies_lookup(db)
     total = len(offerte)
 
+    # Pre-carica offerte esistenti (1 SELECT invece di N)
+    existing_opps = {
+        o.sap_document_id: o
+        for o in db.query(Opportunity).filter(Opportunity.sap_document_id.isnot(None)).all()
+    }
+
+    # Indice posizioni O(N) — elimina scan O(N×M) per documento
+    posizioni_by_doc = _build_posizioni_index(posizioni)
+
+    to_insert = []
+    processed_doc_ids = []
+
     for i, (_, row) in enumerate(offerte.iterrows()):
         sap_doc_id = get(row, "Doc. vend.")
         if not sap_doc_id:
@@ -341,12 +433,12 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
                     "sap_document_id": sap_doc_id,
                     "stage": stage,
                     "valore_totale": parse_decimal(get(row, "Val.netto")),
-                    "data_scadenza": parse_date(get(row, "Fine off.")),
+                    "data_scadenza": None if stage == STAGE_VINTO else parse_date(get(row, "Fine off.")),
                     "data_creazione_sap": parse_date(get(row, "Data cr.")),
                     "sap_creato_da": get(row, "Creato") or None,
                 }
 
-                opp = db.query(Opportunity).filter(Opportunity.sap_document_id == sap_doc_id).first()
+                opp = existing_opps.get(sap_doc_id)
                 if opp:
                     any_changed = any(
                         _changed(opp, k, v)
@@ -359,32 +451,57 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni: pd.DataFrame, offert
                         updated += 1
                     else:
                         identical += 1
+                    processed_doc_ids.append(sap_doc_id)
                 else:
-                    opp = Opportunity(**data)
-                    db.add(opp)
-                    db.flush()
+                    to_insert.append(data)
+                    processed_doc_ids.append(sap_doc_id)
                     inserted += 1
 
-                db.query(OfferLineItem).filter(OfferLineItem.opportunity_id == opp.id).delete()
-                for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
-                    codice = get(riga, "Materiale")
-                    db.add(OfferLineItem(
-                        opportunity_id=opp.id,
-                        codice_sap=codice or None,
-                        descrizione_riga=get(riga, "Definizione") or None,
-                        quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
-                        unita_misura=get(riga, "UM") or None,
-                        prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
-                        totale_riga=parse_decimal(get(riga, "Val.netto")),
-                        gr_merci=(mara_lookup or {}).get(codice) or None,
-                    ))
-
-        if (i + 1) % 100 == 0 or i == total - 1:
+        if (i + 1) % 200 == 0:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
+    # Bulk insert nuove offerte + flush per ottenere gli ID
+    if to_insert:
+        new_opps = [Opportunity(**d) for d in to_insert]
+        db.add_all(new_opps)
+        db.flush()
+        for opp in new_opps:
+            existing_opps[opp.sap_document_id] = opp
+
+    # Bulk delete line items di tutti i documenti processati in 1 query
+    opp_ids = [existing_opps[doc_id].id for doc_id in processed_doc_ids if doc_id in existing_opps]
+    if opp_ids:
+        db.query(OfferLineItem).filter(OfferLineItem.opportunity_id.in_(opp_ids)).delete(synchronize_session=False)
+
+    # Bulk insert tutti i line items
+    line_items = []
+    for doc_id in processed_doc_ids:
+        opp = existing_opps.get(doc_id)
+        if not opp:
+            continue
+        for riga in posizioni_by_doc.get(doc_id, []):
+            codice = get(riga, "Materiale")
+            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+            line_items.append(OfferLineItem(
+                opportunity_id=opp.id,
+                codice_sap=codice or None,
+                descrizione_riga=get(riga, "Definizione") or None,
+                quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
+                unita_misura=get(riga, "UM") or None,
+                prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
+                totale_riga=parse_decimal(get(riga, "Val.netto")),
+                gr_merci=l1,
+                categoria=l2,
+            ))
+    if line_items:
+        db.add_all(line_items)
+
     db.commit()
-    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate")
+    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate  |  {len(line_items)} righe")
+
+    yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+           "processed": total, "total": total}
 
 
 def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
@@ -401,11 +518,22 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
 def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
     inserted = updated = identical = skipped = 0
     companies = _build_companies_lookup(db)
+    total = len(ordini)
+
+    # Pre-carica opportunities e orders esistenti (1 SELECT ciascuno)
     opportunities = {
         o.sap_document_id: o
         for o in db.query(Opportunity).filter(Opportunity.sap_document_id.isnot(None)).all()
     }
-    total = len(ordini)
+    existing_orders = {
+        o.sap_document_id: o
+        for o in db.query(Order).filter(Order.sap_document_id.isnot(None)).all()
+    }
+
+    posizioni_by_doc = _build_posizioni_index(posizioni)
+
+    to_insert = []
+    processed_doc_ids = []
 
     for i, (_, row) in enumerate(ordini.iterrows()):
         sap_doc_id = get(row, "Doc. vend.")
@@ -430,7 +558,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
                     "sap_creato_da": get(row, "Creato") or None,
                 }
 
-                order = db.query(Order).filter(Order.sap_document_id == sap_doc_id).first()
+                order = existing_orders.get(sap_doc_id)
                 if order:
                     any_changed = any(
                         _changed(order, k, v)
@@ -443,36 +571,57 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_
                         updated += 1
                     else:
                         identical += 1
+                    processed_doc_ids.append(sap_doc_id)
                 else:
-                    order = Order(**data)
-                    db.add(order)
-                    db.flush()
+                    to_insert.append(data)
+                    processed_doc_ids.append(sap_doc_id)
                     inserted += 1
 
-                # Se l'offerta collegata esiste in DB ma è ancora "Offerta Mandata", aggiornala a vinta
                 if opportunity and opportunity.stage == STAGE_OFFERTA:
                     opportunity.stage = STAGE_VINTO
 
-                db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
-                for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
-                    codice = get(riga, "Materiale")
-                    db.add(OrderLineItem(
-                        order_id=order.id,
-                        codice_sap=codice or None,
-                        descrizione_riga=get(riga, "Definizione") or None,
-                        quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
-                        unita_misura=get(riga, "UM") or None,
-                        prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
-                        totale_riga=parse_decimal(get(riga, "Val.netto")),
-                        gr_merci=(mara_lookup or {}).get(codice) or None,
-                    ))
-
-        if (i + 1) % 100 == 0 or i == total - 1:
+        if (i + 1) % 200 == 0:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
+    if to_insert:
+        new_orders = [Order(**d) for d in to_insert]
+        db.add_all(new_orders)
+        db.flush()
+        for order in new_orders:
+            existing_orders[order.sap_document_id] = order
+
+    order_ids = [existing_orders[doc_id].id for doc_id in processed_doc_ids if doc_id in existing_orders]
+    if order_ids:
+        db.query(OrderLineItem).filter(OrderLineItem.order_id.in_(order_ids)).delete(synchronize_session=False)
+
+    line_items = []
+    for doc_id in processed_doc_ids:
+        order = existing_orders.get(doc_id)
+        if not order:
+            continue
+        for riga in posizioni_by_doc.get(doc_id, []):
+            codice = get(riga, "Materiale")
+            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+            line_items.append(OrderLineItem(
+                order_id=order.id,
+                codice_sap=codice or None,
+                descrizione_riga=get(riga, "Definizione") or None,
+                quantita=parse_decimal(get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine")),
+                unita_misura=get(riga, "UM") or None,
+                prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
+                totale_riga=parse_decimal(get(riga, "Val.netto")),
+                gr_merci=l1,
+                categoria=l2,
+            ))
+    if line_items:
+        db.add_all(line_items)
+
     db.commit()
-    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati")
+    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati  |  {len(line_items)} righe")
+
+    yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+           "processed": total, "total": total}
 
 
 def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
@@ -483,7 +632,7 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
 
 
 # ---------------------------------------------------------------------------
-# run_import_core — used by non-streaming endpoint
+# run_import_core — endpoint non-streaming
 # ---------------------------------------------------------------------------
 
 def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.DataFrame, flusso: pd.DataFrame, db: Session, mara_lookup: dict = None) -> dict:
@@ -494,7 +643,7 @@ def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.
     offerte_vinte      = set(prec.unique())
     offerta_per_ordine = dict(zip(succ, prec))
 
-    log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni, {len(mara_lookup or {})} materiali MARA")
+    log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni")
 
     return {
         "companies": import_companies(clienti, db),
