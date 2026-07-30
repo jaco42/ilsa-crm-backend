@@ -27,19 +27,12 @@ def crea_feedback(data: dict, db: Session = Depends(get_db), current_user=Depend
 
     try:
         from app.services.email_service import send_email
-        from app.config import settings
-        corpo = (
-            f"Da: {current_user.nome}\n"
-            f"Tipo: {TIPO_LABEL.get(fb.tipo, fb.tipo)}\n"
-            f"Urgenza: {URGENZA_LABEL.get(fb.urgenza, fb.urgenza)}\n\n"
-            f"Titolo: {fb.titolo}\n\n"
-            f"{fb.messaggio or ''}"
-        )
+        corpo = f"{current_user.nome.upper()} - {fb.messaggio or ''}"
         send_email(
-            to=settings.smtp_from or settings.smtp_user,
-            subject=f"[CRM Feedback] {TIPO_LABEL.get(fb.tipo, fb.tipo)} — {fb.titolo}",
+            to=["favarojacopo8@gmail.com"],
+            subject=fb.titolo,
             body=corpo,
-            sender_name="CRM Feedback",
+            sender_name="ILSA CRM",
         )
     except Exception as e:
         log.warning(f"Email feedback non inviata: {e}")
