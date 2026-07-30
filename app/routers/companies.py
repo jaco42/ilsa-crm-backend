@@ -379,6 +379,24 @@ def enrich_azienda_by_sap(
     return {"updated": _apply_enrichment(company, data, db)}
 
 
+@service_router.delete("/enrich-by-sap/{sap_id}")
+def clear_enrichment_by_sap(
+    sap_id: str,
+    db: Session = Depends(get_db),
+    x_service_key: str = Header(None),
+):
+    _auth_service(x_service_key)
+    company = db.query(Company).filter(Company.sap_customer_id == sap_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Azienda non trovata")
+    cleared = {f: getattr(company, f) for f in ("website", "email", "telefono") if getattr(company, f)}
+    company.website = None
+    company.email = None
+    company.telefono = None
+    db.commit()
+    return {"cleared": list(cleared.keys())}
+
+
 @router.patch("/{company_id}")
 def aggiorna_azienda(company_id: str, data: dict, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.id == company_id).first()
