@@ -1,9 +1,30 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from apscheduler.schedulers.background import BackgroundScheduler
 from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth, imports, import_log, feedback, dashboard
+from app.database import SessionLocal
 
-app = FastAPI(title="ILSA CRM API", version="1.0.0")
+
+def _scheduler_job():
+    db = SessionLocal()
+    try:
+        reminders.run_pending_reminders(db)
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(_scheduler_job, "interval", minutes=1)
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="ILSA CRM API", version="1.0.0", lifespan=lifespan)
 
 _origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
 allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
@@ -27,6 +48,7 @@ app.include_router(prodotti.router)
 app.include_router(notes.router)
 app.include_router(orders.router)
 app.include_router(reminders.router)
+app.include_router(reminders.internal_router)
 app.include_router(radar.router)
 app.include_router(dedup.router)
 app.include_router(imports.router)

@@ -5,11 +5,8 @@ class Settings(BaseSettings):
     secret_key: str
     access_token_expire_minutes: int = 480
 
-    smtp_host: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    smtp_from: str = ""
+    resend_api_key: str = ""
+    resend_from: str = "ILSA CRM <onboarding@resend.dev>"
     groq_api_key: str = ""
     service_api_key: str = ""
 

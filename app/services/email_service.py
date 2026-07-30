@@ -1,32 +1,34 @@
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.utils import formataddr
+import resend
 from app.config import settings
 
 
 def send_email(
-    to: str,
+    to: list[str],
     subject: str,
     body: str,
     cc: list[str] | None = None,
     sender_name: str | None = None,
     reply_to: str | None = None,
 ) -> None:
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    smtp_addr = settings.smtp_from or settings.smtp_user
-    msg["From"] = formataddr((sender_name, smtp_addr)) if sender_name else smtp_addr
-    msg["To"] = to
+    resend.api_key = settings.resend_api_key
+
+    from_addr = settings.resend_from
+    if sender_name:
+        # Inject sender name while keeping the configured address
+        import re
+        addr = re.search(r'<(.+?)>', from_addr)
+        email_part = addr.group(1) if addr else from_addr
+        from_addr = f"{sender_name} <{email_part}>"
+
+    params: resend.Emails.SendParams = {
+        "from": from_addr,
+        "to": to,
+        "subject": subject,
+        "text": body,
+    }
     if cc:
-        msg["Cc"] = ", ".join(cc)
+        params["cc"] = cc
     if reply_to:
-        msg["Reply-To"] = reply_to
+        params["reply_to"] = reply_to
 
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    recipients = [to] + (cc or [])
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
-        smtp.starttls()
-        smtp.login(settings.smtp_user, settings.smtp_password)
-        smtp.sendmail(smtp_addr, recipients, msg.as_string())
+    resend.Emails.send(params)

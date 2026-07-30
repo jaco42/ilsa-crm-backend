@@ -246,7 +246,7 @@ def write_via_api(company_id: str, fields: dict, service_key: str, sap_customer_
     return resp.json().get("updated", {})
 
 
-def process(companies, client, dry_run: bool) -> list[dict]:
+def process(companies, client, dry_run: bool, db=None) -> list[dict]:
     results = []
 
     for i, c in enumerate(companies):
@@ -300,14 +300,33 @@ def process(companies, client, dry_run: bool) -> list[dict]:
                 service_key = os.environ.get("SERVICE_API_KEY", "").strip()
                 written = write_via_api(str(c.id), to_write, service_key, sap_customer_id=c.sap_customer_id)
                 entry["aggiornato"] = {k: {"value": v, "confidence": data[k]["confidence"]} for k, v in written.items()}
-                if not written:
+                if written:
+                    if db:
+                        for field, value in written.items():
+                            setattr(c, field, value)
+                        db.commit()
+                else:
                     log.info("  → tutti i campi già presenti, nessun aggiornamento")
+                    if db and not c.website:
+                        c.website = "__enriched__"
+                        db.commit()
+            else:
+                # niente trovato — segna come tentata per skippare al prossimo run
+                log.info("  → niente trovato, segno come tentata")
+                if db and not c.website:
+                    c.website = "__enriched__"
+                    db.commit()
 
         except json.JSONDecodeError as e:
             entry["errore"] = f"JSON parse error: {e}"
             log.warning(f"  [WARN] risposta non JSON: {e}")
         except Exception as e:
-            entry["errore"] = str(e)
+            err = str(e)
+            entry["errore"] = err
+            if "rate_limit_exceeded" in err or "tokens per day" in err or "429" in err:
+                log.error(f"  [GROQ RATE LIMIT] token giornalieri esauriti — stop.")
+                results.append(entry)
+                break
             log.error(f"  [ERROR] {e}")
 
         results.append(entry)
@@ -351,7 +370,7 @@ def main():
         if args.dry_run:
             log.info("DRY RUN — nessuna ricerca, nessun aggiornamento DB.")
 
-        results = process(companies, client, args.dry_run)
+        results = process(companies, client, args.dry_run, db=db)
 
     finally:
         db.close()

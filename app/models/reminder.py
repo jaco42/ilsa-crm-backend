@@ -13,7 +13,7 @@ class EmailReminder(Base):
     opportunity_id = Column(UUID(as_uuid=True), ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True)
     oggetto = Column(String, nullable=False)
     body = Column(Text, nullable=False)
-    destinatario = Column(String, nullable=False)
+    destinatari = Column(ARRAY(String), nullable=False, default=list)
     cc = Column(ARRAY(String), nullable=True, default=list)
     scheduled_at = Column(DateTime(timezone=True), nullable=False)
     status = Column(String, nullable=False, default="pending")  # pending | sent | failed
