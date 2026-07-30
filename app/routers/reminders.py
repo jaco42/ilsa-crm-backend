@@ -79,7 +79,7 @@ def run_pending_reminders(db: Session) -> dict:
                 subject=r.oggetto,
                 body=r.body,
                 cc=r.cc or [],
-                sender_name=r.created_by or None,
+                sender_name="ILSA CRM",
                 reply_to=r.mittente_email or None,
             )
             r.status = "sent"
