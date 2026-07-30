@@ -1,10 +1,10 @@
-import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth, imports, import_log, feedback, dashboard
 from app.database import SessionLocal
+from app.config import settings
 
 
 def _scheduler_job():
@@ -26,8 +26,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ILSA CRM API", version="1.0.0", lifespan=lifespan)
 
-_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
-allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+allowed_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,

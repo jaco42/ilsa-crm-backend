@@ -147,6 +147,8 @@ def get_order_line_items(order_id: str, db: Session = Depends(get_db)):
             "unita_misura": i.unita_misura,
             "prezzo_unitario": float(i.prezzo_unitario) if i.prezzo_unitario is not None else None,
             "totale_riga": float(i.totale_riga) if i.totale_riga is not None else None,
+            "gr_merci": i.gr_merci,
+            "categoria": i.categoria,
         }
         for i in items
     ]

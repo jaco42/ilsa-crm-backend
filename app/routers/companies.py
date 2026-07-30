@@ -333,6 +333,7 @@ def elimina_azienda(company_id: str, db: Session = Depends(get_db)):
     db.commit()
 
 
+
 def _auth_service(x_service_key: str):
     if not settings.service_api_key or x_service_key != settings.service_api_key:
         raise HTTPException(status_code=403, detail="Service key non valida")
