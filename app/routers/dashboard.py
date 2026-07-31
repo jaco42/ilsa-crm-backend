@@ -102,8 +102,9 @@ def dashboard_chart(
             db.query(
                 func.extract("year", date_col).label("anno"),
                 func.extract(period_fn, date_col).label("periodo"),
-                func.count(Company.id).label("valore"),
+                func.count(func.distinct(Company.id)).label("valore"),
             )
+            .join(Order, Order.company_id == Company.id)
             .filter(date_col >= since, date_col.isnot(None))
         )
 
@@ -138,7 +139,8 @@ def dashboard_kpi(
     )
 
     nuovi_clienti = int(
-        db.query(func.count(Company.id))
+        db.query(func.count(func.distinct(Company.id)))
+        .join(Order, Order.company_id == Company.id)
         .filter(Company.sap_created_at >= dal, Company.sap_created_at <= al)
         .scalar() or 0
     )
