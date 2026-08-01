@@ -52,61 +52,151 @@ STAGE_OFFERTA = "Offerta Mandata"
 
 # ---------------------------------------------------------------------------
 # Gerarchia prodotti → L1 (gr_merci) / L2 (categoria)
+# Fonte: listino Excel ILSA 2026 come master per L1.
+# Articoli fuori listino classificati per prefisso gerarchia SAP.
 # ---------------------------------------------------------------------------
 
+# Gerarchie exact-match che finiscono in Complementi
+# (forni linea secondaria e accessori forni venduti come complemento)
+_COMPLEMENTI_EXACT = {
+    "COPFPFOR01_0001255",  # detergenti / accessori forno
+    "COPFPFOR01_0001280",  # forni gas linea secondaria
+    "COPFPFOR01_0001290",  # forni elettrici linea secondaria
+    "COPFOFOR01_0001255",  # supporti, kit, guide forno
+    "COPFZFOR01_0001255",  # teglie, portagriglie
+    "COSLCFOR01_0001255",  # sonde al cuore per forni
+}
+
 _COTTURA_L2 = {
-    "CUC": "Cucine",               "FOR": "Forni",
-    "FRY": "Frytop",               "GRI": "Griglie",
-    "GRE": "Griglie",              "FRI": "Friggitrici",
-    "BRA": "Brasiere",             "TPS": "Teppanyaki / Piastre",
-    "CUP": "Cuocipasta",           "PAS": "Cuocipasta",
-    "BAG": "Bagnomaria",           "PEN": "Pentoloni",
-    "COC": "Cuoci legumi",         "NEU": "Neutri cottura",
-    "CAP": "Cappe cottura",
+    "CUC": "Cucine",        "FOR": "Forni",
+    "FRY": "Frytop",        "GRI": "Griglie",
+    "GRE": "Griglie",       "FRI": "Friggitrici",
+    "BRA": "Brasiere",      "TPS": "Tuttapiastra",
+    "CUP": "Cuocipasta",    "PAS": "Cuocipasta",
+    "BAG": "Bagnomaria",    "PEN": "Pentoloni",
+    "COC": "Contenitori caldo", "NEU": "Neutri cottura",
+    "SAM": "Salamandre",    "CAP": "Accessori cottura",
 }
+
 _REFRG_L2 = {
-    "ARM": "Armadi frigoriferi",   "TAV": "Tavoli refrigerati",
-    "VET": "Vetrine refrigerate",  "ABO": "Abbattitori",
-    "ACF": "Abbattitori / Congelatori",
+    "ABOV": "Abbattitori",
+    "ARMA": "Armadi frigoriferi",
+    "TAVR": "Tavoli refrigerati",
+    "VETR": "Vetrine refrigerate",
+    "ACFR": "Accessori frigo",
 }
+
+_LAVA_L2 = {
+    "0000130": "Lavabicchieri / Lavapiatti",
+    "0000131": "Lavastoviglie a cappotte",
+    "0000132": "Lavaoggetti",
+    "0000134": "Cestelli e accessori lavaggio",
+}
+
 _PSVEN_L2 = {
-    "COT": "Ricambi Cottura",      "FRE": "Ricambi Freddo",
-    "NEU": "Ricambi Neutro",       "COM": "Ricambi Comuni",
+    "COTT": "Ricambi Cottura",
+    "FRED": "Ricambi Freddo",
+    "NEUT": "Ricambi Neutro",
+    "COMU": "Ricambi Comuni",
+}
+
+_SPEC_L2 = {
+    "PROD": "Speciali produzione - Prodotti su Misura",
+    "COMM": "Speciali commerciali - Prodotti di Terzi",
 }
 
 
 def _gerarchia_to_famiglia(g: str):
-    """Restituisce (L1, L2) da un codice Gerarchia prodotti SAP."""
+    """Restituisce (L1, L2) da un codice Gerarchia prodotti SAP.
+
+    L1 segue la struttura del listino ILSA 2026:
+      Refrigerazione, Cottura, Neutro, Complementi,
+      Ricambi, Speciali, Self Service, Varie + Trasporti
+    Cappe inglobate in Neutro (allineato al listino).
+    """
     if not g:
         return None, None
+
+    # --- Complementi exact (prima dei prefissi COPF generici) ---
+    if g in _COMPLEMENTI_EXACT:
+        return "Complementi", "Accessori forni"
+
+    # --- Cottura ---
     if g.startswith("COPF") or g.startswith("COTT"):
         import re
-        m = re.match(r"COPF[COPRZ]?([A-Z]{3})\d+", g) or re.match(r"COTT_?([A-Z]{3})\d+", g)
-        l2 = _COTTURA_L2.get(m.group(1), "Accessori cottura") if m else "Accessori cottura"
+        m = (re.match(r"COPF[A-Z]([A-Z]{3})\d+", g)
+             or re.match(r"COTT_([A-Z]{3})\d+", g)
+             or re.match(r"COSLC([A-Z]{3})\d+", g))
+        l2 = _COTTURA_L2.get(m.group(1) if m else "", "Accessori cottura")
         return "Cottura", l2
-    if g.startswith("CAPPE"):
-        return "Cappe", "Cappe aspirazione"
+    if g.startswith("VARIE_COTT"):
+        return "Cottura", "Accessori cottura"
+    if g.startswith("COSLCSAM"):
+        return "Cottura", "Salamandre"
+
+    # --- Refrigerazione ---
     if g.startswith("REFRG"):
         parts = g.split("_")
-        key = parts[1][:3] if len(parts) > 1 else ""
+        key = parts[1] if len(parts) > 1 else ""
         return "Refrigerazione", _REFRG_L2.get(key, "Refrigerazione altro")
-    if g.startswith("GN_"):
-        return "Neutro", "Grandi Neutrali"
-    if g.startswith("PS_NE"):
-        return "Neutro", "Piani di Servizio"
     if g.startswith("PZ_NE"):
-        return "Neutro", "Pezzi / Accessori Neutro"
+        return "Refrigerazione", "Tavoli pizza"
+
+    # --- Neutro (include Cappe) ---
+    if g.startswith("CAPPE"):
+        return "Neutro", "Cappe Aspirazione"
+    if g.startswith("GN_"):
+        return "Neutro", "Tavoli e Armadi"
+    if g.startswith("PS_NE"):
+        parts = g.split("_")
+        sub = parts[2] if len(parts) > 2 else ""
+        if sub.startswith("PS03") or sub.startswith("PS04"):
+            return "Neutro", "Lavelli e Vasche"
+        return "Neutro", "Piani di Lavoro"
+    if g.startswith("VARIE_RIPI"):
+        return "Neutro", "Ripiani"
+    if g.startswith("VARIE_PENS"):
+        return "Neutro", "Pensili"
+    if g.startswith("VARIE_ARMN"):
+        return "Neutro", "Armadi neutri"
+    if g.startswith("VARIE_SCAF"):
+        return "Neutro", "Scaffali"
+    if g.startswith("VARIE_LVMN"):
+        return "Neutro", "Lavamani"
+    if g.startswith("VARIE_TEGL"):
+        return "Neutro", "Teglie"
+    if g.startswith("VARIE_ACGE"):
+        return "Neutro", "Accessori e Kit"
+
+    # --- Ricambi Neutro (spostato da Neutro a Ricambi) ---
+    if g.startswith("PSVEN_NEUT"):
+        return "Ricambi", "Ricambi Neutro"
+
+    # --- Complementi ---
     if g.startswith("LAVA_"):
-        return "Lavaggio", "Lavastoviglie"
-    if g.startswith("SELF_"):
-        return "Self Service", "Self service"
+        suffix = g.split("_")[-1] if "_" in g else ""
+        return "Complementi", _LAVA_L2.get(suffix, "Lavaggio")
+    if g.startswith("VARIE_COMM"):
+        return "Complementi", "Fabbricatori ghiaccio"
+
+    # --- Ricambi ---
     if g.startswith("PSVEN"):
         parts = g.split("_")
-        key = parts[1][:3] if len(parts) > 1 else ""
-        return "Ricambi", _PSVEN_L2.get(key, "Parti di ricambio")
+        key = parts[1] if len(parts) > 1 else ""
+        return "Ricambi", _PSVEN_L2.get(key, "Ricambi Generali")
+
+    # --- Speciali ---
     if g.startswith("SPEC_"):
-        return "Speciali", "Progetti speciali"
-    return "Varie", "Varie / Altro"
+        parts = g.split("_")
+        key = parts[1] if len(parts) > 1 else ""
+        return "Speciali", _SPEC_L2.get(key, "Speciali")
+
+    # --- Self Service ---
+    if g.startswith("SELF_"):
+        return "Self Service", "Self service"
+
+    # --- Varie e Trasporti (ALTRO_GENE, non classificati) ---
+    return "Varie e Trasporti", "Varie e Trasporti"
 
 
 # ---------------------------------------------------------------------------
