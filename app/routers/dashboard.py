@@ -27,10 +27,10 @@ def _since(months_back: int) -> date:
 def dashboard_chart(
     tf: str = Query("1A"),
     metrica: str = Query("fatturato"),
-    data_dim: str = Query("ordine"),  # ordine | offerta | cliente (solo per fatturato)
-    gr_merci: str = Query(None),      # filtro per famiglia (usa OrderLineItem.gr_merci)
-    categoria: str = Query(None),     # filtro per categoria L2 (usa OrderLineItem.categoria)
-    company_id: str = Query(None),    # filtra per singola azienda
+    data_dim: str = Query("ordine"),
+    categoria: str = Query(None),
+    prodotto: str = Query(None),
+    company_id: str = Query(None),
     db: Session = Depends(get_db),
 ):
     months_back = 36 if tf == "3A" else 12
@@ -39,13 +39,13 @@ def dashboard_chart(
     period_fn = "quarter" if by_quarter else "month"
 
     if metrica == "fatturato":
-        if gr_merci or categoria:
+        if categoria or prodotto:
             date_col = Order.data_ordine
             li_filters = [date_col >= since, date_col.isnot(None)]
-            if gr_merci:
-                li_filters.append(OrderLineItem.gr_merci == gr_merci)
             if categoria:
                 li_filters.append(OrderLineItem.categoria == categoria)
+            if prodotto:
+                li_filters.append(OrderLineItem.prodotto == prodotto)
             if company_id:
                 li_filters.append(Order.company_id == company_id)
             q = (
@@ -194,70 +194,65 @@ def dashboard_per_famiglia(
     db: Session = Depends(get_db),
 ):
     base_ord = [Order.data_ordine >= dal, Order.data_ordine <= al,
-                OrderLineItem.gr_merci.isnot(None), OrderLineItem.gr_merci != ""]
+                OrderLineItem.categoria.isnot(None), OrderLineItem.categoria != ""]
     base_opp = [Opportunity.data_creazione_sap >= dal, Opportunity.data_creazione_sap <= al,
-                OfferLineItem.gr_merci.isnot(None), OfferLineItem.gr_merci != ""]
+                OfferLineItem.categoria.isnot(None), OfferLineItem.categoria != ""]
     if company_id:
         base_ord.append(Order.company_id == company_id)
         base_opp.append(Opportunity.company_id == company_id)
 
-    # Query 1: famiglia-level order stats
     fam_rows = (
         db.query(
-            OrderLineItem.gr_merci.label("famiglia"),
+            OrderLineItem.categoria.label("famiglia"),
             func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
             func.count(func.distinct(Order.id)).label("ordini"),
         )
         .join(Order, OrderLineItem.order_id == Order.id)
         .filter(*base_ord)
-        .group_by(OrderLineItem.gr_merci)
+        .group_by(OrderLineItem.categoria)
         .order_by(func.sum(OrderLineItem.totale_riga).desc())
         .all()
     )
 
-    # Query 2: (famiglia, categoria) order stats — una sola query per tutte le famiglie
     cat_rows = (
         db.query(
-            OrderLineItem.gr_merci.label("famiglia"),
-            OrderLineItem.categoria.label("categoria"),
+            OrderLineItem.categoria.label("famiglia"),
+            OrderLineItem.prodotto.label("prodotto"),
             func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
             func.count(func.distinct(Order.id)).label("ordini"),
         )
         .join(Order, OrderLineItem.order_id == Order.id)
-        .filter(*base_ord, OrderLineItem.categoria.isnot(None), OrderLineItem.categoria != "")
-        .group_by(OrderLineItem.gr_merci, OrderLineItem.categoria)
-        .order_by(OrderLineItem.gr_merci, func.sum(OrderLineItem.totale_riga).desc())
+        .filter(*base_ord, OrderLineItem.prodotto.isnot(None), OrderLineItem.prodotto != "")
+        .group_by(OrderLineItem.categoria, OrderLineItem.prodotto)
+        .order_by(OrderLineItem.categoria, func.sum(OrderLineItem.totale_riga).desc())
         .all()
     )
 
-    # Query 3: famiglia-level offer count
     fam_opp_rows = (
         db.query(
-            OfferLineItem.gr_merci.label("famiglia"),
+            OfferLineItem.categoria.label("famiglia"),
             func.count(func.distinct(Opportunity.id)).label("offerte"),
         )
         .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
         .filter(*base_opp)
-        .group_by(OfferLineItem.gr_merci)
+        .group_by(OfferLineItem.categoria)
         .all()
     )
 
-    # Query 4: (famiglia, categoria) offer count
     cat_opp_rows = (
         db.query(
-            OfferLineItem.gr_merci.label("famiglia"),
-            OfferLineItem.categoria.label("categoria"),
+            OfferLineItem.categoria.label("famiglia"),
+            OfferLineItem.prodotto.label("prodotto"),
             func.count(func.distinct(Opportunity.id)).label("offerte"),
         )
         .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
-        .filter(*base_opp, OfferLineItem.categoria.isnot(None), OfferLineItem.categoria != "")
-        .group_by(OfferLineItem.gr_merci, OfferLineItem.categoria)
+        .filter(*base_opp, OfferLineItem.prodotto.isnot(None), OfferLineItem.prodotto != "")
+        .group_by(OfferLineItem.categoria, OfferLineItem.prodotto)
         .all()
     )
 
-    # Build lookup maps in Python
     offerte_fam = {r.famiglia: int(r.offerte) for r in fam_opp_rows}
-    offerte_cat = {(r.famiglia, r.categoria): int(r.offerte) for r in cat_opp_rows}
+    offerte_cat = {(r.famiglia, r.prodotto): int(r.offerte) for r in cat_opp_rows}
     cats_by_fam: dict = {}
     for r in cat_rows:
         cats_by_fam.setdefault(r.famiglia, []).append(r)
@@ -273,10 +268,10 @@ def dashboard_per_famiglia(
             "pct": round(float(r.fatturato) / totale * 100) if totale else 0,
             "sub": [
                 {
-                    "categoria": s.categoria or "—",
+                    "prodotto": s.prodotto or "—",
                     "fatturato": float(s.fatturato),
                     "ordini": int(s.ordini),
-                    "offerte": offerte_cat.get((r.famiglia, s.categoria), 0),
+                    "offerte": offerte_cat.get((r.famiglia, s.prodotto), 0),
                     "pct": round(float(s.fatturato) / totale * 100) if totale else 0,
                 }
                 for s in cats_by_fam.get(r.famiglia, [])

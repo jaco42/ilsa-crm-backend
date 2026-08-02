@@ -15,6 +15,6 @@ class OfferLineItem(Base):
     unita_misura = Column(String, nullable=True)
     prezzo_unitario = Column(Numeric, nullable=True)
     totale_riga = Column(Numeric, nullable=True)
-    gr_merci = Column(String, nullable=True)
     categoria = Column(String, nullable=True)
+    prodotto = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

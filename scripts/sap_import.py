@@ -473,8 +473,8 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
                 unita_misura=get(riga, "UM") or None,
                 prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
                 totale_riga=parse_decimal(get(riga, "Val.netto")),
-                gr_merci=l1,
-                categoria=l2,
+                categoria=l1,
+                prodotto=l2,
             ))
 
     db.commit()
@@ -543,8 +543,8 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
                 unita_misura=get(riga, "UM") or None,
                 prezzo_unitario=parse_decimal(get(riga, "Prz. netto")),
                 totale_riga=parse_decimal(get(riga, "Val.netto")),
-                gr_merci=l1,
-                categoria=l2,
+                categoria=l1,
+                prodotto=l2,
             ))
 
     db.commit()

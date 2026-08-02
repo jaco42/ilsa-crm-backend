@@ -16,7 +16,7 @@ TODAY = date.today
 STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
 
 
-def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, gr_merci=None, categoria=None):
+def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None):
     if agente:
         q = q.filter(Opportunity.sap_creato_da == agente)
     if scadenza_dal:
@@ -31,14 +31,14 @@ def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_
         q = q.filter(Opportunity.data_creazione_sap >= creazione_dal)
     if creazione_al:
         q = q.filter(Opportunity.data_creazione_sap <= creazione_al)
-    if gr_merci or categoria:
+    if categoria or prodotto:
         sub = select(OfferLineItem.opportunity_id).where(
             OfferLineItem.opportunity_id == Opportunity.id
         )
-        if gr_merci:
-            sub = sub.where(OfferLineItem.gr_merci == gr_merci)
         if categoria:
             sub = sub.where(OfferLineItem.categoria == categoria)
+        if prodotto:
+            sub = sub.where(OfferLineItem.prodotto == prodotto)
         q = q.filter(exists(sub))
     return q
 
@@ -54,8 +54,8 @@ def stats_opportunity(
     valore_max: float = Query(None),
     creazione_dal: date = Query(None),
     creazione_al: date = Query(None),
-    gr_merci: str = Query(None),
     categoria: str = Query(None),
+    prodotto: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
 ):
@@ -74,7 +74,7 @@ def stats_opportunity(
     q = db.query(Opportunity)
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, gr_merci=gr_merci, categoria=categoria)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto)
 
     totale = q.count()
 
@@ -99,13 +99,13 @@ def stats_opportunity(
         func.coalesce(func.sum(case((Opportunity.stage.in_(STAGE_PERSA) | scaduta_cond, Opportunity.valore_totale))), 0),
     ).one()
 
-    if gr_merci or categoria:
+    if categoria or prodotto:
         # Con filtro prodotto i valori si calcolano sulle righe offerta, non sull'intera offerta
         li_conds = []
-        if gr_merci:
-            li_conds.append(OfferLineItem.gr_merci == gr_merci)
         if categoria:
             li_conds.append(OfferLineItem.categoria == categoria)
+        if prodotto:
+            li_conds.append(OfferLineItem.prodotto == prodotto)
 
         base_opp_conds = []
         if company_id:
@@ -174,8 +174,8 @@ def lista_opportunity(
     valore_max: float = Query(None),
     creazione_dal: date = Query(None),
     creazione_al: date = Query(None),
-    gr_merci: str = Query(None),
     categoria: str = Query(None),
+    prodotto: str = Query(None),
     search: str = Query(None),
     sort_by: str = Query('data_creazione_sap'),
     sort_dir: str = Query('desc'),
@@ -187,7 +187,7 @@ def lista_opportunity(
     q = db.query(Opportunity).options(joinedload(Opportunity.company))
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, gr_merci=gr_merci, categoria=categoria)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto)
     if search:
         q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         company_joined = True
@@ -289,8 +289,8 @@ def get_line_items(opportunity_id: str, db: Session = Depends(get_db)):
             "unita_misura": i.unita_misura,
             "prezzo_unitario": float(i.prezzo_unitario) if i.prezzo_unitario is not None else None,
             "totale_riga": float(i.totale_riga) if i.totale_riga is not None else None,
-            "gr_merci": i.gr_merci,
             "categoria": i.categoria,
+            "prodotto": i.prodotto,
         }
         for i in items
     ]

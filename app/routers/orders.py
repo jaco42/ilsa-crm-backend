@@ -12,7 +12,7 @@ from app.auth import get_current_user
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
 
-def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=None, categoria=None):
+def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None):
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
     if dal:
@@ -23,14 +23,14 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=No
         q = q.filter(Order.valore_totale >= valore_min)
     if valore_max is not None:
         q = q.filter(Order.valore_totale <= valore_max)
-    if gr_merci or categoria:
+    if categoria or prodotto:
         sub = select(OrderLineItem.order_id).where(
             OrderLineItem.order_id == Order.id
         ).correlate(Order)
-        if gr_merci:
-            sub = sub.where(OrderLineItem.gr_merci == gr_merci)
         if categoria:
             sub = sub.where(OrderLineItem.categoria == categoria)
+        if prodotto:
+            sub = sub.where(OrderLineItem.prodotto == prodotto)
         q = q.filter(exists(sub))
     return q
 
@@ -43,8 +43,8 @@ def stats_ordini(
     al: date = Query(None),
     valore_min: float = Query(None),
     valore_max: float = Query(None),
-    gr_merci: str = Query(None),
     categoria: str = Query(None),
+    prodotto: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
     db: Session = Depends(get_db),
@@ -52,7 +52,7 @@ def stats_ordini(
     q = db.query(Order)
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=gr_merci, categoria=categoria)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto)
 
     totale = q.count()
 
@@ -63,10 +63,10 @@ def stats_ordini(
         q_ytd = q_ytd.filter(Order.data_ordine <= kpi_al)
 
     q_joined = q_ytd.join(OrderLineItem, OrderLineItem.order_id == Order.id)
-    if gr_merci:
-        q_joined = q_joined.filter(OrderLineItem.gr_merci == gr_merci)
     if categoria:
         q_joined = q_joined.filter(OrderLineItem.categoria == categoria)
+    if prodotto:
+        q_joined = q_joined.filter(OrderLineItem.prodotto == prodotto)
     totale_ytd, valore_totale, da_offerte = (
         q_joined.with_entities(
             func.count(func.distinct(Order.id)),
@@ -93,8 +93,8 @@ def lista_ordini(
     al: date = Query(None),
     valore_min: float = Query(None),
     valore_max: float = Query(None),
-    gr_merci: str = Query(None),
     categoria: str = Query(None),
+    prodotto: str = Query(None),
     search: str = Query(None),
     limit: int = Query(100),
     offset: int = Query(0),
@@ -103,7 +103,7 @@ def lista_ordini(
     q = db.query(Order).options(joinedload(Order.company))
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, gr_merci=gr_merci, categoria=categoria)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto)
     if search:
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(
@@ -147,8 +147,8 @@ def get_order_line_items(order_id: str, db: Session = Depends(get_db)):
             "unita_misura": i.unita_misura,
             "prezzo_unitario": float(i.prezzo_unitario) if i.prezzo_unitario is not None else None,
             "totale_riga": float(i.totale_riga) if i.totale_riga is not None else None,
-            "gr_merci": i.gr_merci,
             "categoria": i.categoria,
+            "prodotto": i.prodotto,
         }
         for i in items
     ]
