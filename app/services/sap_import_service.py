@@ -547,46 +547,51 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
-    # Bulk insert nuove offerte + flush per ottenere gli ID
+    # Commit opportunità (nuove + aggiornate) in un'unica transazione
     if to_insert:
         new_opps = [Opportunity(**d) for d in to_insert]
         db.add_all(new_opps)
         db.flush()
         for opp in new_opps:
             existing_opps[opp.sap_document_id] = opp
-
-    # Bulk delete line items di tutti i documenti processati in 1 query
-    opp_ids = [existing_opps[doc_id].id for doc_id in processed_doc_ids if doc_id in existing_opps]
-    if opp_ids:
-        db.query(OfferLineItem).filter(OfferLineItem.opportunity_id.in_(opp_ids)).delete(synchronize_session=False)
-
-    # Bulk insert tutti i line items
-    line_items = []
-    for doc_id in processed_doc_ids:
-        opp = existing_opps.get(doc_id)
-        if not opp:
-            continue
-        for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
-            l1, l2 = _gerarchia_to_famiglia(gerarchia)
-            line_items.append(OfferLineItem(
-                opportunity_id=opp.id,
-                codice_sap=codice or None,
-                descrizione_riga=definizione or None,
-                quantita=parse_decimal(qty),
-                unita_misura=um or None,
-                prezzo_unitario=parse_decimal(prz),
-                totale_riga=parse_decimal(val),
-                categoria=l1,
-                prodotto=l2,
-            ))
-    if line_items:
-        db.add_all(line_items)
-
     db.commit()
-    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate  |  {len(line_items)} righe")
 
-    yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
-           "processed": total, "total": total}
+    # Line items in chunk da 300 doc: delete vecchi + insert nuovi + commit + yield
+    _CHUNK = 300
+    total_li = 0
+    for ci in range(0, len(processed_doc_ids), _CHUNK):
+        chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
+        chunk_opp_ids = [existing_opps[d].id for d in chunk_doc_ids if d in existing_opps]
+        if chunk_opp_ids:
+            db.query(OfferLineItem).filter(
+                OfferLineItem.opportunity_id.in_(chunk_opp_ids)
+            ).delete(synchronize_session=False)
+        chunk_li = []
+        for doc_id in chunk_doc_ids:
+            opp = existing_opps.get(doc_id)
+            if not opp:
+                continue
+            for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
+                l1, l2 = _gerarchia_to_famiglia(gerarchia)
+                chunk_li.append(OfferLineItem(
+                    opportunity_id=opp.id,
+                    codice_sap=codice or None,
+                    descrizione_riga=definizione or None,
+                    quantita=parse_decimal(qty),
+                    unita_misura=um or None,
+                    prezzo_unitario=parse_decimal(prz),
+                    totale_riga=parse_decimal(val),
+                    categoria=l1,
+                    prodotto=l2,
+                ))
+        if chunk_li:
+            db.add_all(chunk_li)
+        db.commit()
+        total_li += len(chunk_li)
+        yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+               "processed": total, "total": total}
+
+    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate  |  {total_li} righe")
 
 
 def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
@@ -669,43 +674,51 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
+    # Commit ordini (nuovi + aggiornati) in un'unica transazione
     if to_insert:
         new_orders = [Order(**d) for d in to_insert]
         db.add_all(new_orders)
         db.flush()
         for order in new_orders:
             existing_orders[order.sap_document_id] = order
-
-    order_ids = [existing_orders[doc_id].id for doc_id in processed_doc_ids if doc_id in existing_orders]
-    if order_ids:
-        db.query(OrderLineItem).filter(OrderLineItem.order_id.in_(order_ids)).delete(synchronize_session=False)
-
-    line_items = []
-    for doc_id in processed_doc_ids:
-        order = existing_orders.get(doc_id)
-        if not order:
-            continue
-        for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
-            l1, l2 = _gerarchia_to_famiglia(gerarchia)
-            line_items.append(OrderLineItem(
-                order_id=order.id,
-                codice_sap=codice or None,
-                descrizione_riga=definizione or None,
-                quantita=parse_decimal(qty),
-                unita_misura=um or None,
-                prezzo_unitario=parse_decimal(prz),
-                totale_riga=parse_decimal(val),
-                categoria=l1,
-                prodotto=l2,
-            ))
-    if line_items:
-        db.add_all(line_items)
-
     db.commit()
-    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati  |  {len(line_items)} righe")
 
-    yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
-           "processed": total, "total": total}
+    # Line items in chunk da 300 doc: delete vecchi + insert nuovi + commit + yield
+    _CHUNK = 300
+    total_li = 0
+    for ci in range(0, len(processed_doc_ids), _CHUNK):
+        chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
+        chunk_order_ids = [existing_orders[d].id for d in chunk_doc_ids if d in existing_orders]
+        if chunk_order_ids:
+            db.query(OrderLineItem).filter(
+                OrderLineItem.order_id.in_(chunk_order_ids)
+            ).delete(synchronize_session=False)
+        chunk_li = []
+        for doc_id in chunk_doc_ids:
+            order = existing_orders.get(doc_id)
+            if not order:
+                continue
+            for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
+                l1, l2 = _gerarchia_to_famiglia(gerarchia)
+                chunk_li.append(OrderLineItem(
+                    order_id=order.id,
+                    codice_sap=codice or None,
+                    descrizione_riga=definizione or None,
+                    quantita=parse_decimal(qty),
+                    unita_misura=um or None,
+                    prezzo_unitario=parse_decimal(prz),
+                    totale_riga=parse_decimal(val),
+                    categoria=l1,
+                    prodotto=l2,
+                ))
+        if chunk_li:
+            db.add_all(chunk_li)
+        db.commit()
+        total_li += len(chunk_li)
+        yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+               "processed": total, "total": total}
+
+    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati  |  {total_li} righe")
 
 
 def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
