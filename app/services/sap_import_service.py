@@ -504,12 +504,13 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
     processed_doc_ids = []
     _CHUNK = 300
 
-    for i, (_, row) in enumerate(offerte.iterrows()):
-        sap_doc_id = get(row, "Doc. vend.")
+    _records = offerte.to_dict('records')
+    for i, row in enumerate(_records):
+        sap_doc_id = row.get("Doc. vend.") or ""
         if not sap_doc_id:
             skipped += 1
         else:
-            sap_customer_id = get(row, "Committ.")
+            sap_customer_id = row.get("Committ.") or ""
             company = companies.get(sap_customer_id)
             if not company:
                 skipped += 1
@@ -519,11 +520,11 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                     "company_id": company.id,
                     "sap_document_id": sap_doc_id,
                     "stage": stage,
-                    "org_cm": get(row, "OrgCm") or None,
-                    "valore_totale": parse_decimal(get(row, "Val.netto")),
-                    "data_scadenza": None if stage == STAGE_VINTO else parse_date(get(row, "Fine off.")),
-                    "data_creazione_sap": parse_date(get(row, "Data cr.")),
-                    "sap_creato_da": get(row, "Creato") or None,
+                    "org_cm": row.get("OrgCm") or None,
+                    "valore_totale": parse_decimal(row.get("Val.netto") or ""),
+                    "data_scadenza": None if stage == STAGE_VINTO else parse_date(row.get("Fine off.") or ""),
+                    "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
+                    "sap_creato_da": row.get("Creato") or None,
                 }
 
                 opp = existing_opps.get(sap_doc_id)
@@ -629,14 +630,17 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
     }
 
     to_insert = []
+    pending_bulk_updates = []
     processed_doc_ids = []
+    _CHUNK = 300
 
-    for i, (_, row) in enumerate(ordini.iterrows()):
-        sap_doc_id = get(row, "Doc. vend.")
+    _records = ordini.to_dict('records')
+    for i, row in enumerate(_records):
+        sap_doc_id = row.get("Doc. vend.") or ""
         if not sap_doc_id:
             skipped += 1
         else:
-            sap_customer_id = get(row, "Committ.")
+            sap_customer_id = row.get("Committ.") or ""
             company = companies.get(sap_customer_id)
             if not company:
                 skipped += 1
@@ -648,23 +652,18 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                     "company_id": company.id,
                     "opportunity_id": opportunity.id if opportunity else None,
                     "sap_document_id": sap_doc_id,
-                    "org_cm": get(row, "OrgCm") or None,
-                    "valore_totale": parse_decimal(get(row, "Val.netto")),
-                    "data_ordine": parse_date(get(row, "Data doc.")),
-                    "data_creazione_sap": parse_date(get(row, "Data cr.")),
-                    "sap_creato_da": get(row, "Creato") or None,
+                    "org_cm": row.get("OrgCm") or None,
+                    "valore_totale": parse_decimal(row.get("Val.netto") or ""),
+                    "data_ordine": parse_date(row.get("Data doc.") or ""),
+                    "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
+                    "sap_creato_da": row.get("Creato") or None,
                 }
 
                 order = existing_orders.get(sap_doc_id)
                 if order:
-                    any_changed = any(
-                        _changed(order, k, v)
-                        for k, v in data.items() if v is not None and hasattr(order, k)
-                    )
-                    if any_changed:
-                        for k, v in data.items():
-                            if v is not None:
-                                setattr(order, k, v)
+                    changed = {k: v for k, v in data.items() if v is not None and hasattr(order, k) and _changed(order, k, v)}
+                    if changed:
+                        pending_bulk_updates.append({"id": order.id, **changed})
                         updated += 1
                     else:
                         identical += 1
@@ -677,18 +676,25 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                 if opportunity and opportunity.stage == STAGE_OFFERTA:
                     opportunity.stage = STAGE_VINTO
 
+        if len(pending_bulk_updates) >= _CHUNK:
+            db.bulk_update_mappings(Order, pending_bulk_updates)
+            db.commit()
+            pending_bulk_updates = []
+
         if (i + 1) % 200 == 0:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
-    # Commit ordini (nuovi + aggiornati) in un'unica transazione
+    if pending_bulk_updates:
+        db.bulk_update_mappings(Order, pending_bulk_updates)
     if to_insert:
         new_orders = [Order(**d) for d in to_insert]
         db.add_all(new_orders)
         db.flush()
         for order in new_orders:
             existing_orders[order.sap_document_id] = order
-    db.commit()
+    if pending_bulk_updates or to_insert:
+        db.commit()
 
     # Line items in chunk da 300 doc: delete vecchi + insert nuovi + commit + yield
     _CHUNK = 300
