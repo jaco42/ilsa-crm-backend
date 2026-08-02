@@ -33,6 +33,7 @@ def lista_aziende(
     provincia: str = Query(None),
     storico_contatti: str = Query(None),
     tipo_attivita: str = Query(None),
+    agente: str = Query(None),
     sort_by: str = Query("ragione_sociale"),
     sort_dir: str = Query("asc"),
     limit: int = Query(100),
@@ -149,6 +150,8 @@ def lista_aziende(
         q = q.filter(Company.provincia.ilike(provincia))
     if storico_contatti:
         q = q.filter(Company.storico_contatti.ilike(f"%{storico_contatti}%"))
+    if agente:
+        q = q.filter(Company.agente.ilike(f"%{agente}%"))
     if tipo_attivita:
         q = q.filter(Company.tipo_attivita.ilike(f"%{tipo_attivita}%"))
 
