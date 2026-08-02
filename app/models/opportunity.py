@@ -26,6 +26,7 @@ class Opportunity(Base):
     stage = Column(String, nullable=False, default="Richiesta Info")
     canale_acquisizione = Column(String, nullable=True)
     sap_document_id = Column(String, nullable=True, unique=True)
+    org_cm = Column(String, nullable=True)
     valore_totale = Column(Numeric, nullable=True)
     data_scadenza = Column(Date, nullable=True)
     data_creazione_sap = Column(Date, nullable=True)

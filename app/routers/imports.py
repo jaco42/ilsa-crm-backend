@@ -745,6 +745,7 @@ async def import_sap(
     vbap: UploadFile = File(...),
     vbfa: UploadFile = File(...),
     mara: UploadFile = File(None),
+    knvv: UploadFile = File(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -763,6 +764,10 @@ async def import_sap(
 
     try:
         stats = run_import_core(clienti, docvend, posizioni, flusso, db, mara_lookup)
+        if knvv:
+            from app.services.sap_import_service import import_knvv
+            knvv_stats = import_knvv(await knvv.read(), db)
+            stats["knvv"] = knvv_stats
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Errore import: {e}")
@@ -777,6 +782,7 @@ async def import_sap_stream(
     vbap: UploadFile = File(...),
     vbfa: UploadFile = File(...),
     mara: UploadFile = File(None),
+    knvv: UploadFile = File(None),
 ):
     try:
         import pandas as _pd; del _pd  # check pandas is available
@@ -787,6 +793,7 @@ async def import_sap_stream(
         # mara incluso nel dict così il generatore lo libera via .pop() subito dopo il lookup
         file_bytes = {
             "mara": await mara.read() if mara else b"",
+            "knvv": await knvv.read() if knvv else b"",
             "kna1": await kna1.read(),
             "vbak": await vbak.read(),
             "vbfa": await vbfa.read(),
@@ -875,11 +882,19 @@ async def import_sap_stream(
                 ordini_stats = partial
             del ordini_df, posizioni_by_doc; gc.collect()
 
+            knvv_stats = {}
+            knvv_b = file_bytes.pop("knvv", b"")
+            if knvv_b:
+                from app.services.sap_import_service import import_knvv
+                yield json.dumps({"type": "progress", "pct": 99, "fase": "Importo agenti KNVV..."}) + "\n"
+                knvv_stats = import_knvv(knvv_b, db)
+
             yield json.dumps({"type": "done", "pct": 100, "stats": {
                 "companies": companies_stats,
                 "prodotti":  prodotti_stats,
                 "offerte":   offerte_stats,
                 "ordini":    ordini_stats,
+                "knvv":      knvv_stats,
             }}) + "\n"
         except Exception as e:
             db.rollback()

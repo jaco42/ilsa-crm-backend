@@ -12,6 +12,7 @@ class Order(Base):
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
     opportunity_id = Column(UUID(as_uuid=True), ForeignKey("opportunities.id"), nullable=True)
     sap_document_id = Column(String, nullable=True, unique=True)
+    org_cm = Column(String, nullable=True)
     valore_totale = Column(Numeric, nullable=True)
     data_ordine = Column(Date, nullable=True)
     data_creazione_sap = Column(Date, nullable=True)

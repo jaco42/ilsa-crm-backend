@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from app.models.agent_assignment import AgentAssignment
 from app.models.company import Company, CompanyOrigin, CompanyStatus
 from app.models.company_sap_ids import CompanySapId
 from app.models.dedup import DeduplicaAlert
@@ -29,7 +30,7 @@ STAGE_OFFERTA = "Offerta Mandata"
 
 _KNA1_COLS = {"Cliente", "Nome 1", "Nome 2", "Partita IVA 1", "Part.IVA", "Partita IVA",
               "Via", "Località", "Localit?", "CAP", "Rg", "Pse", "Telefono 1", "Data ap."}
-_VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc."}
+_VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc.", "OrgCm"}
 _VBAP_COLS = {"Doc. vend.", "Materiale", "Definizione",
               "Qtà ordine", "Qt? ordine", "Qt ordine", "UM", "Prz. netto", "Val.netto",
               "Gerarchia prodotti"}
@@ -516,6 +517,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                     "company_id": company.id,
                     "sap_document_id": sap_doc_id,
                     "stage": stage,
+                    "org_cm": get(row, "OrgCm") or None,
                     "valore_totale": parse_decimal(get(row, "Val.netto")),
                     "data_scadenza": None if stage == STAGE_VINTO else parse_date(get(row, "Fine off.")),
                     "data_creazione_sap": parse_date(get(row, "Data cr.")),
@@ -634,6 +636,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                     "company_id": company.id,
                     "opportunity_id": opportunity.id if opportunity else None,
                     "sap_document_id": sap_doc_id,
+                    "org_cm": get(row, "OrgCm") or None,
                     "valore_totale": parse_decimal(get(row, "Val.netto")),
                     "data_ordine": parse_date(get(row, "Data doc.")),
                     "data_creazione_sap": parse_date(get(row, "Data cr.")),
@@ -742,3 +745,34 @@ def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.
     ordini_r = {k: ordini_r[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
     return {"companies": companies_r, "prodotti": prodotti_r, "offerte": offerte_r, "ordini": ordini_r}
+
+
+def import_knvv(content: bytes, db: Session) -> dict:
+    """Importa KNVV (agent assignments). Svuota e ricarica la tabella ad ogni import."""
+    text = None
+    for enc in ("utf-8-sig", "latin-1", "cp1252"):
+        try:
+            text = content.decode(enc)
+            break
+        except Exception:
+            continue
+
+    rows = {}
+    for line in text.splitlines():
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
+        parts = [p.strip() for p in line.strip("|").split("|")]
+        if len(parts) < 4 or parts[0] == "Cliente":
+            continue
+        cliente_sap, org_cm, zn = parts[0], parts[1], parts[3]
+        if not cliente_sap or not org_cm or not zn:
+            continue
+        if (cliente_sap, org_cm) not in rows:
+            rows[(cliente_sap, org_cm)] = zn
+
+    db.query(AgentAssignment).delete()
+    for (cliente_sap, org_cm), zn in rows.items():
+        db.add(AgentAssignment(cliente_sap=cliente_sap, org_cm=org_cm, zn=zn))
+
+    db.commit()
+    return {"inserted": len(rows)}
