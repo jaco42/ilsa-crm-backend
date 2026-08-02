@@ -489,23 +489,30 @@ def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
 # ---------------------------------------------------------------------------
 
 def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte_vinte: set, db: Session, mara_lookup: dict = None):
+    import time as _time
     inserted = updated = skipped = 0
     companies = _build_companies_lookup(db)
     total = len(offerte)
 
-    # Solo id — niente ORM completo, niente confronto campi
+    t0 = _time.monotonic()
     existing_opps = {
         sap_id: opp_id
         for opp_id, sap_id in db.query(Opportunity.id, Opportunity.sap_document_id)
                                  .filter(Opportunity.sap_document_id.isnot(None)).all()
     }
+    log.info(f"[T] existing_opps load: {_time.monotonic()-t0:.2f}s  ({len(existing_opps)} opp)")
 
     to_insert = []
     pending_bulk_updates = []
     processed_doc_ids = []
     _CHUNK = 300
 
+    t0 = _time.monotonic()
     _records = offerte.to_dict('records')
+    log.info(f"[T] to_dict: {_time.monotonic()-t0:.2f}s  ({len(_records)} righe)")
+
+    t_loop = _time.monotonic()
+    t_batch = _time.monotonic()
     for i, row in enumerate(_records):
         sap_doc_id = row.get("Doc. vend.") or ""
         if not sap_doc_id:
@@ -538,14 +545,19 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                 processed_doc_ids.append(sap_doc_id)
 
         if len(pending_bulk_updates) >= _CHUNK:
+            t_db = _time.monotonic()
             db.bulk_update_mappings(Opportunity, pending_bulk_updates)
             db.commit()
+            log.info(f"[T] bulk_update {len(pending_bulk_updates)} opp: {_time.monotonic()-t_db:.2f}s")
             pending_bulk_updates = []
 
         if (i + 1) % 200 == 0:
+            log.info(f"[T] righe 0-{i+1}: {_time.monotonic()-t_batch:.2f}s totale")
+            t_batch = _time.monotonic()
             yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
+    log.info(f"[T] loop completo {total} righe: {_time.monotonic()-t_loop:.2f}s")
     log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update — avvio commit finale")
     if pending_bulk_updates:
         db.bulk_update_mappings(Opportunity, pending_bulk_updates)
