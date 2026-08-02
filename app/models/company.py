@@ -37,6 +37,7 @@ class Company(Base):
     sap_customer_id = Column(String, nullable=True, unique=True)
     sap_created_at = Column(Date, nullable=True)
     origin = Column(Enum(CompanyOrigin), nullable=False, default=CompanyOrigin.crm_manual)
+    agente = Column(String, nullable=True)
     storico_contatti = Column(String, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

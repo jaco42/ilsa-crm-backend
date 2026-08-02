@@ -811,5 +811,15 @@ def import_knvv(content: bytes, db: Session) -> dict:
     for (cliente_sap, org_cm), zn in rows.items():
         db.add(AgentAssignment(cliente_sap=cliente_sap, org_cm=org_cm, zn=zn))
 
+    from app.models.company import Company
+    updated = 0
+    for (cliente_sap, _), zn in rows.items():
+        n = (
+            db.query(Company)
+            .filter(Company.sap_customer_id == cliente_sap)
+            .update({"agente": zn}, synchronize_session=False)
+        )
+        updated += n
+
     db.commit()
-    return {"inserted": len(rows)}
+    return {"inserted": len(rows), "aziende_aggiornate": updated}
