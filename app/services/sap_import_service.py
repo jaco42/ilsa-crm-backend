@@ -547,7 +547,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
-    # Commit opportunità (nuove + aggiornate) in un'unica transazione
+    log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update, {identical} identical — avvio commit opp")
     if to_insert:
         new_opps = [Opportunity(**d) for d in to_insert]
         db.add_all(new_opps)
@@ -555,13 +555,14 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
         for opp in new_opps:
             existing_opps[opp.sap_document_id] = opp
     db.commit()
+    log.info(f"[DEBUG] commit opp ok — avvio chunk line items su {len(processed_doc_ids)} doc")
 
-    # Line items in chunk da 300 doc: delete vecchi + insert nuovi + commit + yield
     _CHUNK = 300
     total_li = 0
     for ci in range(0, len(processed_doc_ids), _CHUNK):
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
         chunk_opp_ids = [existing_opps[d].id for d in chunk_doc_ids if d in existing_opps]
+        log.info(f"[DEBUG] chunk offerte {ci}–{ci+len(chunk_doc_ids)}: delete {len(chunk_opp_ids)} opp ids")
         if chunk_opp_ids:
             db.query(OfferLineItem).filter(
                 OfferLineItem.opportunity_id.in_(chunk_opp_ids)
@@ -588,6 +589,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             db.add_all(chunk_li)
         db.commit()
         total_li += len(chunk_li)
+        log.info(f"[DEBUG] chunk offerte {ci} ok: {len(chunk_li)} righe")
         yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                "processed": total, "total": total}
 
