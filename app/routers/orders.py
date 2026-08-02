@@ -96,6 +96,8 @@ def lista_ordini(
     categoria: str = Query(None),
     prodotto: str = Query(None),
     search: str = Query(None),
+    sort_by: str = Query('data_ordine'),
+    sort_dir: str = Query('desc'),
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -111,7 +113,14 @@ def lista_ordini(
             Company.ragione_sociale.ilike(f"%{search}%")
         )
     total = q.count()
-    orders = q.order_by(Order.data_ordine.desc()).offset(offset).limit(limit).all()
+    _SORT_COLS = {
+        'data_ordine':    Order.data_ordine,
+        'valore_totale':  Order.valore_totale,
+        'sap_document_id': Order.sap_document_id,
+    }
+    sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
+    order_expr = sort_col.asc() if sort_dir == 'asc' else sort_col.desc()
+    orders = q.order_by(order_expr).offset(offset).limit(limit).all()
 
     opp_ids = [o.opportunity_id for o in orders if o.opportunity_id]
     opps = db.query(Opportunity.id, Opportunity.sap_document_id).filter(Opportunity.id.in_(opp_ids)).all()

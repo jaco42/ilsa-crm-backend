@@ -229,7 +229,8 @@ def parse_date(val: str):
         return None
     for fmt in ["%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"]:
         try:
-            return datetime.strptime(val, fmt).date()
+            d = datetime.strptime(val, fmt).date()
+            return None if d.year > 2100 else d
         except ValueError:
             continue
     return None
