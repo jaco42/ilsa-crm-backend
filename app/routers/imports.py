@@ -811,6 +811,7 @@ async def import_sap_stream(
             import_offerte_stream, import_ordini_stream, _build_posizioni_index,
         )
         db = SessionLocal()
+        db.expire_on_commit = False
         try:
             yield json.dumps({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."}) + "\n"
 
