@@ -501,6 +501,8 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
 
     to_insert = []
     processed_doc_ids = []
+    _COMMIT_OPP = 300
+    pending_updates = 0
 
     for i, (_, row) in enumerate(offerte.iterrows()):
         sap_doc_id = get(row, "Doc. vend.")
@@ -535,6 +537,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                             if v is not None:
                                 setattr(opp, k, v)
                         updated += 1
+                        pending_updates += 1
                     else:
                         identical += 1
                     processed_doc_ids.append(sap_doc_id)
@@ -543,18 +546,23 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                     processed_doc_ids.append(sap_doc_id)
                     inserted += 1
 
+        if pending_updates >= _COMMIT_OPP:
+            db.commit()
+            pending_updates = 0
+
         if (i + 1) % 200 == 0:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
-    log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update, {identical} identical — avvio commit opp")
+    log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update, {identical} identical — avvio commit opp finale")
     if to_insert:
         new_opps = [Opportunity(**d) for d in to_insert]
         db.add_all(new_opps)
         db.flush()
         for opp in new_opps:
             existing_opps[opp.sap_document_id] = opp
-    db.commit()
+    if pending_updates or to_insert:
+        db.commit()
     log.info(f"[DEBUG] commit opp ok — avvio chunk line items su {len(processed_doc_ids)} doc")
 
     _CHUNK = 300
