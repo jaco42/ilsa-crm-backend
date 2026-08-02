@@ -1,6 +1,9 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logging.basicConfig(level=logging.INFO)
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth, imports, import_log, feedback, dashboard
 from app.database import SessionLocal

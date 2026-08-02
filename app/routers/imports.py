@@ -897,6 +897,8 @@ async def import_sap_stream(
                 "knvv":      knvv_stats,
             }}) + "\n"
         except Exception as e:
+            import logging as _logging
+            _logging.getLogger(__name__).exception(f"[SAP STREAM ERROR] {e}")
             db.rollback()
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
         finally:
