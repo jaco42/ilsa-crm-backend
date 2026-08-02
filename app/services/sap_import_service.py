@@ -500,9 +500,9 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
     }
 
     to_insert = []
+    pending_bulk_updates = []
     processed_doc_ids = []
-    _COMMIT_OPP = 300
-    pending_updates = 0
+    _CHUNK = 300
 
     for i, (_, row) in enumerate(offerte.iterrows()):
         sap_doc_id = get(row, "Doc. vend.")
@@ -528,16 +528,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
 
                 opp = existing_opps.get(sap_doc_id)
                 if opp:
-                    any_changed = any(
-                        _changed(opp, k, v)
-                        for k, v in data.items() if v is not None and hasattr(opp, k)
-                    )
-                    if any_changed:
-                        for k, v in data.items():
-                            if v is not None:
-                                setattr(opp, k, v)
+                    changed = {k: v for k, v in data.items() if v is not None and hasattr(opp, k) and _changed(opp, k, v)}
+                    if changed:
+                        pending_bulk_updates.append({"id": opp.id, **changed})
                         updated += 1
-                        pending_updates += 1
                     else:
                         identical += 1
                     processed_doc_ids.append(sap_doc_id)
@@ -546,22 +540,25 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                     processed_doc_ids.append(sap_doc_id)
                     inserted += 1
 
-        if pending_updates >= _COMMIT_OPP:
+        if len(pending_bulk_updates) >= _CHUNK:
+            db.bulk_update_mappings(Opportunity, pending_bulk_updates)
             db.commit()
-            pending_updates = 0
+            pending_bulk_updates = []
 
         if (i + 1) % 200 == 0:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
     log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update, {identical} identical — avvio commit opp finale")
+    if pending_bulk_updates:
+        db.bulk_update_mappings(Opportunity, pending_bulk_updates)
     if to_insert:
         new_opps = [Opportunity(**d) for d in to_insert]
         db.add_all(new_opps)
         db.flush()
         for opp in new_opps:
             existing_opps[opp.sap_document_id] = opp
-    if pending_updates or to_insert:
+    if pending_bulk_updates or to_insert:
         db.commit()
     log.info(f"[DEBUG] commit opp ok — avvio chunk line items su {len(processed_doc_ids)} doc")
 
