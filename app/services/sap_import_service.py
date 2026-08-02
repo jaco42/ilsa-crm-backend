@@ -490,93 +490,89 @@ def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
 
 def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte_vinte: set, db: Session, mara_lookup: dict = None):
     import time as _time
-    inserted = updated = skipped = 0
+    import uuid as _uuid
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy import func as _func
+
+    skipped = 0
     companies = _build_companies_lookup(db)
     total = len(offerte)
 
+    # Fase 1: costruisci tutte le righe in Python — 0ms, nessun DB
+    t0 = _time.monotonic()
+    all_rows = []
+    _records = offerte.to_dict('records')
+    for row in _records:
+        sap_doc_id = row.get("Doc. vend.") or ""
+        if not sap_doc_id:
+            skipped += 1
+            continue
+        company = companies.get(row.get("Committ.") or "")
+        if not company:
+            skipped += 1
+            continue
+        stage = STAGE_VINTO if sap_doc_id in offerte_vinte else STAGE_OFFERTA
+        all_rows.append({
+            "id": _uuid.uuid4(),
+            "company_id": company.id,
+            "sap_document_id": sap_doc_id,
+            "stage": stage,
+            "org_cm": row.get("OrgCm") or None,
+            "valore_totale": parse_decimal(row.get("Val.netto") or ""),
+            "data_scadenza": None if stage == STAGE_VINTO else parse_date(row.get("Fine off.") or ""),
+            "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
+            "sap_creato_da": row.get("Creato") or None,
+        })
+    log.info(f"[T] build rows: {_time.monotonic()-t0:.2f}s  ({len(all_rows)} valid, {skipped} skip)")
+    yield {"inserted": 0, "updated": 0, "identical": 0, "skipped": skipped,
+           "processed": len(all_rows), "total": total}
+
+    # Fase 2: upsert in chunk — 1 query SQL per chunk, non N query
+    _UPSERT_CHUNK = 2000
+    upserted = 0
+    t_upsert = _time.monotonic()
+    for ci in range(0, len(all_rows), _UPSERT_CHUNK):
+        chunk = all_rows[ci:ci + _UPSERT_CHUNK]
+        t_c = _time.monotonic()
+        stmt = pg_insert(Opportunity).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["sap_document_id"],
+            set_={
+                "company_id":        stmt.excluded.company_id,
+                "stage":             stmt.excluded.stage,
+                "org_cm":            stmt.excluded.org_cm,
+                "valore_totale":     stmt.excluded.valore_totale,
+                "data_scadenza":     stmt.excluded.data_scadenza,
+                "data_creazione_sap":stmt.excluded.data_creazione_sap,
+                "sap_creato_da":     stmt.excluded.sap_creato_da,
+                "updated_at":        _func.now(),
+            }
+        )
+        db.execute(stmt)
+        db.commit()
+        upserted += len(chunk)
+        log.info(f"[T] upsert chunk {ci}-{ci+len(chunk)}: {_time.monotonic()-t_c:.2f}s")
+        yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
+               "processed": upserted, "total": total}
+    log.info(f"[T] upsert totale {len(all_rows)} opp: {_time.monotonic()-t_upsert:.2f}s")
+
+    # Fase 3: ricarica gli id (include nuovi inseriti) per i line items
     t0 = _time.monotonic()
     existing_opps = {
         sap_id: opp_id
         for opp_id, sap_id in db.query(Opportunity.id, Opportunity.sap_document_id)
                                  .filter(Opportunity.sap_document_id.isnot(None)).all()
     }
-    log.info(f"[T] existing_opps load: {_time.monotonic()-t0:.2f}s  ({len(existing_opps)} opp)")
+    log.info(f"[T] reload ids: {_time.monotonic()-t0:.2f}s")
 
-    to_insert = []
-    pending_bulk_updates = []
-    processed_doc_ids = []
-    _CHUNK = 300
+    processed_doc_ids = [r["sap_document_id"] for r in all_rows]
 
-    t0 = _time.monotonic()
-    _records = offerte.to_dict('records')
-    log.info(f"[T] to_dict: {_time.monotonic()-t0:.2f}s  ({len(_records)} righe)")
-
-    t_loop = _time.monotonic()
-    t_batch = _time.monotonic()
-    for i, row in enumerate(_records):
-        sap_doc_id = row.get("Doc. vend.") or ""
-        if not sap_doc_id:
-            skipped += 1
-        else:
-            sap_customer_id = row.get("Committ.") or ""
-            company = companies.get(sap_customer_id)
-            if not company:
-                skipped += 1
-            else:
-                stage = STAGE_VINTO if sap_doc_id in offerte_vinte else STAGE_OFFERTA
-                data = {
-                    "company_id": company.id,
-                    "sap_document_id": sap_doc_id,
-                    "stage": stage,
-                    "org_cm": row.get("OrgCm") or None,
-                    "valore_totale": parse_decimal(row.get("Val.netto") or ""),
-                    "data_scadenza": None if stage == STAGE_VINTO else parse_date(row.get("Fine off.") or ""),
-                    "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
-                    "sap_creato_da": row.get("Creato") or None,
-                }
-
-                opp_id = existing_opps.get(sap_doc_id)
-                if opp_id:
-                    pending_bulk_updates.append({"id": opp_id, **data})
-                    updated += 1
-                else:
-                    to_insert.append(data)
-                    inserted += 1
-                processed_doc_ids.append(sap_doc_id)
-
-        if len(pending_bulk_updates) >= _CHUNK:
-            t_db = _time.monotonic()
-            db.bulk_update_mappings(Opportunity, pending_bulk_updates)
-            db.commit()
-            log.info(f"[T] bulk_update {len(pending_bulk_updates)} opp: {_time.monotonic()-t_db:.2f}s")
-            pending_bulk_updates = []
-
-        if (i + 1) % 200 == 0:
-            log.info(f"[T] righe 0-{i+1}: {_time.monotonic()-t_batch:.2f}s totale")
-            t_batch = _time.monotonic()
-            yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
-                   "processed": i + 1, "total": total}
-
-    log.info(f"[T] loop completo {total} righe: {_time.monotonic()-t_loop:.2f}s")
-    log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update — avvio commit finale")
-    if pending_bulk_updates:
-        db.bulk_update_mappings(Opportunity, pending_bulk_updates)
-    if to_insert:
-        new_opps = [Opportunity(**d) for d in to_insert]
-        db.add_all(new_opps)
-        db.flush()
-        for opp in new_opps:
-            existing_opps[opp.sap_document_id] = opp.id
-    if pending_bulk_updates or to_insert:
-        db.commit()
-    log.info(f"[DEBUG] commit opp ok — avvio chunk line items su {len(processed_doc_ids)} doc")
-
+    # Fase 4: line items in chunk da 300
     _CHUNK = 300
     total_li = 0
     for ci in range(0, len(processed_doc_ids), _CHUNK):
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
         chunk_opp_ids = [existing_opps[d] for d in chunk_doc_ids if d in existing_opps]
-        log.info(f"[DEBUG] chunk offerte {ci}–{ci+len(chunk_doc_ids)}: delete {len(chunk_opp_ids)} opp ids")
         if chunk_opp_ids:
             db.query(OfferLineItem).filter(
                 OfferLineItem.opportunity_id.in_(chunk_opp_ids)
@@ -603,11 +599,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             db.add_all(chunk_li)
         db.commit()
         total_li += len(chunk_li)
-        log.info(f"[DEBUG] chunk offerte {ci} ok: {len(chunk_li)} righe")
-        yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
+        yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
                "processed": total, "total": total}
 
-    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {skipped} saltate  |  {total_li} righe")
+    log.info(f"Offerte:    {upserted} upsertate  |  {skipped} saltate  |  {total_li} righe")
 
 
 def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
@@ -623,92 +618,96 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
 # ---------------------------------------------------------------------------
 
 def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
-    inserted = updated = skipped = 0
+    import time as _time
+    import uuid as _uuid
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy import func as _func
+
+    skipped = 0
     companies = _build_companies_lookup(db)
     total = len(ordini)
 
-    # Solo id — niente ORM completo, niente confronto campi
     opp_id_by_doc = {
         sap_id: (opp_id, stage)
         for opp_id, sap_id, stage in db.query(Opportunity.id, Opportunity.sap_document_id, Opportunity.stage)
                                         .filter(Opportunity.sap_document_id.isnot(None)).all()
     }
+
+    # Fase 1: costruisci tutte le righe in Python
+    t0 = _time.monotonic()
+    all_rows = []
+    opp_ids_to_win = []
+    _records = ordini.to_dict('records')
+    for row in _records:
+        sap_doc_id = row.get("Doc. vend.") or ""
+        if not sap_doc_id:
+            skipped += 1
+            continue
+        company = companies.get(row.get("Committ.") or "")
+        if not company:
+            skipped += 1
+            continue
+        sap_offerta_id = offerta_per_ordine.get(sap_doc_id)
+        opp_entry = opp_id_by_doc.get(sap_offerta_id) if sap_offerta_id else None
+        opp_id = opp_entry[0] if opp_entry else None
+        opp_stage = opp_entry[1] if opp_entry else None
+        all_rows.append({
+            "id": _uuid.uuid4(),
+            "company_id": company.id,
+            "opportunity_id": opp_id,
+            "sap_document_id": sap_doc_id,
+            "org_cm": row.get("OrgCm") or None,
+            "valore_totale": parse_decimal(row.get("Val.netto") or ""),
+            "data_ordine": parse_date(row.get("Data doc.") or ""),
+            "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
+            "sap_creato_da": row.get("Creato") or None,
+        })
+        if opp_id and opp_stage == STAGE_OFFERTA:
+            opp_ids_to_win.append(opp_id)
+    log.info(f"[T] build rows ordini: {_time.monotonic()-t0:.2f}s  ({len(all_rows)} valid, {skipped} skip)")
+    yield {"inserted": 0, "updated": 0, "identical": 0, "skipped": skipped,
+           "processed": len(all_rows), "total": total}
+
+    # Fase 2: upsert in chunk
+    _UPSERT_CHUNK = 2000
+    upserted = 0
+    t_upsert = _time.monotonic()
+    for ci in range(0, len(all_rows), _UPSERT_CHUNK):
+        chunk = all_rows[ci:ci + _UPSERT_CHUNK]
+        stmt = pg_insert(Order).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["sap_document_id"],
+            set_={
+                "company_id":        stmt.excluded.company_id,
+                "opportunity_id":    stmt.excluded.opportunity_id,
+                "org_cm":            stmt.excluded.org_cm,
+                "valore_totale":     stmt.excluded.valore_totale,
+                "data_ordine":       stmt.excluded.data_ordine,
+                "data_creazione_sap":stmt.excluded.data_creazione_sap,
+                "sap_creato_da":     stmt.excluded.sap_creato_da,
+                "updated_at":        _func.now(),
+            }
+        )
+        db.execute(stmt)
+        upserted += len(chunk)
+    if opp_ids_to_win:
+        db.query(Opportunity).filter(Opportunity.id.in_(opp_ids_to_win)).update(
+            {"stage": STAGE_VINTO}, synchronize_session=False
+        )
+    db.commit()
+    log.info(f"[T] upsert ordini {len(all_rows)}: {_time.monotonic()-t_upsert:.2f}s")
+    yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
+           "processed": upserted, "total": total}
+
+    # Fase 3: ricarica ids per line items
     existing_orders = {
         sap_id: order_id
         for order_id, sap_id in db.query(Order.id, Order.sap_document_id)
                                    .filter(Order.sap_document_id.isnot(None)).all()
     }
+    processed_doc_ids = [r["sap_document_id"] for r in all_rows]
 
-    to_insert = []
-    pending_bulk_updates = []
-    processed_doc_ids = []
-    opp_ids_to_win = []
-    _CHUNK = 300
-
-    _records = ordini.to_dict('records')
-    for i, row in enumerate(_records):
-        sap_doc_id = row.get("Doc. vend.") or ""
-        if not sap_doc_id:
-            skipped += 1
-        else:
-            sap_customer_id = row.get("Committ.") or ""
-            company = companies.get(sap_customer_id)
-            if not company:
-                skipped += 1
-            else:
-                sap_offerta_id = offerta_per_ordine.get(sap_doc_id)
-                opp_entry = opp_id_by_doc.get(sap_offerta_id) if sap_offerta_id else None
-                opp_id = opp_entry[0] if opp_entry else None
-                opp_stage = opp_entry[1] if opp_entry else None
-
-                data = {
-                    "company_id": company.id,
-                    "opportunity_id": opp_id,
-                    "sap_document_id": sap_doc_id,
-                    "org_cm": row.get("OrgCm") or None,
-                    "valore_totale": parse_decimal(row.get("Val.netto") or ""),
-                    "data_ordine": parse_date(row.get("Data doc.") or ""),
-                    "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
-                    "sap_creato_da": row.get("Creato") or None,
-                }
-
-                order_id = existing_orders.get(sap_doc_id)
-                if order_id:
-                    pending_bulk_updates.append({"id": order_id, **data})
-                    updated += 1
-                else:
-                    to_insert.append(data)
-                    inserted += 1
-                processed_doc_ids.append(sap_doc_id)
-
-                if opp_id and opp_stage == STAGE_OFFERTA:
-                    opp_ids_to_win.append(opp_id)
-
-        if len(pending_bulk_updates) >= _CHUNK:
-            db.bulk_update_mappings(Order, pending_bulk_updates)
-            db.commit()
-            pending_bulk_updates = []
-
-        if (i + 1) % 200 == 0:
-            yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
-                   "processed": i + 1, "total": total}
-
-    if pending_bulk_updates:
-        db.bulk_update_mappings(Order, pending_bulk_updates)
-    if to_insert:
-        new_orders = [Order(**d) for d in to_insert]
-        db.add_all(new_orders)
-        db.flush()
-        for order in new_orders:
-            existing_orders[order.sap_document_id] = order.id
-    if opp_ids_to_win:
-        db.query(Opportunity).filter(Opportunity.id.in_(opp_ids_to_win)).update(
-            {"stage": STAGE_VINTO}, synchronize_session=False
-        )
-    if pending_bulk_updates or to_insert or opp_ids_to_win:
-        db.commit()
-
-    # Line items in chunk da 300 doc: delete vecchi + insert nuovi + commit + yield
+    # Fase 4: line items in chunk da 300
     _CHUNK = 300
     total_li = 0
     for ci in range(0, len(processed_doc_ids), _CHUNK):
@@ -740,10 +739,10 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             db.add_all(chunk_li)
         db.commit()
         total_li += len(chunk_li)
-        yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
+        yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
                "processed": total, "total": total}
 
-    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {skipped} saltati  |  {total_li} righe")
+    log.info(f"Ordini:     {upserted} upsertati  |  {skipped} saltati  |  {total_li} righe")
 
 
 def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
