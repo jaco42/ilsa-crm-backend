@@ -17,6 +17,13 @@ def _scheduler_job():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    db.execute(text("UPDATE opportunities SET data_scadenza = NULL WHERE EXTRACT(YEAR FROM data_scadenza) > 2100"))
+    db.commit()
+    db.close()
+
     scheduler = BackgroundScheduler()
     scheduler.add_job(_scheduler_job, "interval", minutes=1)
     scheduler.start()
