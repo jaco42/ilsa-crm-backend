@@ -12,9 +12,11 @@ from app.auth import get_current_user
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
 
-def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None):
+def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None):
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
+    if org_cm:
+        q = q.filter(Order.org_cm == org_cm)
     if dal:
         q = q.filter(Order.data_ordine >= dal)
     if al:
@@ -45,6 +47,7 @@ def stats_ordini(
     valore_max: float = Query(None),
     categoria: str = Query(None),
     prodotto: str = Query(None),
+    org_cm: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
     db: Session = Depends(get_db),
@@ -52,7 +55,7 @@ def stats_ordini(
     q = db.query(Order)
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
 
     totale = q.count()
 
@@ -95,6 +98,7 @@ def lista_ordini(
     valore_max: float = Query(None),
     categoria: str = Query(None),
     prodotto: str = Query(None),
+    org_cm: str = Query(None),
     search: str = Query(None),
     sort_by: str = Query('data_ordine'),
     sort_dir: str = Query('desc'),
@@ -105,7 +109,7 @@ def lista_ordini(
     q = db.query(Order).options(joinedload(Order.company))
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
     if search:
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(
@@ -138,6 +142,7 @@ def lista_ordini(
             "data_ordine": o.data_ordine.isoformat() if o.data_ordine else None,
             "data_creazione_sap": o.data_creazione_sap.isoformat() if o.data_creazione_sap else None,
             "sap_creato_da": o.sap_creato_da,
+            "org_cm": o.org_cm,
         }
         for o in orders
     ]

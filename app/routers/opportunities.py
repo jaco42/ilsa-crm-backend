@@ -16,9 +16,11 @@ TODAY = date.today
 STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
 
 
-def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None):
+def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None, org_cm=None):
     if agente:
         q = q.filter(Opportunity.sap_creato_da == agente)
+    if org_cm:
+        q = q.filter(Opportunity.org_cm == org_cm)
     if scadenza_dal:
         q = q.filter(Opportunity.data_scadenza >= scadenza_dal)
     if scadenza_al:
@@ -56,6 +58,7 @@ def stats_opportunity(
     creazione_al: date = Query(None),
     categoria: str = Query(None),
     prodotto: str = Query(None),
+    org_cm: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
 ):
@@ -74,7 +77,7 @@ def stats_opportunity(
     q = db.query(Opportunity)
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
 
     totale = q.count()
 
@@ -176,6 +179,7 @@ def lista_opportunity(
     creazione_al: date = Query(None),
     categoria: str = Query(None),
     prodotto: str = Query(None),
+    org_cm: str = Query(None),
     search: str = Query(None),
     sort_by: str = Query('data_creazione_sap'),
     sort_dir: str = Query('desc'),
@@ -187,7 +191,7 @@ def lista_opportunity(
     q = db.query(Opportunity).options(joinedload(Opportunity.company))
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
     if search:
         q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         company_joined = True

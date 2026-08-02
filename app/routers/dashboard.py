@@ -31,6 +31,7 @@ def dashboard_chart(
     categoria: str = Query(None),
     prodotto: str = Query(None),
     company_id: str = Query(None),
+    org_cm: str = Query(None),
     db: Session = Depends(get_db),
 ):
     months_back = 36 if tf == "3A" else 12
@@ -48,6 +49,8 @@ def dashboard_chart(
                 li_filters.append(OrderLineItem.prodotto == prodotto)
             if company_id:
                 li_filters.append(Order.company_id == company_id)
+            if org_cm:
+                li_filters.append(Order.org_cm == org_cm)
             q = (
                 db.query(
                     func.extract("year", date_col).label("anno"),
@@ -82,6 +85,8 @@ def dashboard_chart(
             )
             if company_id:
                 q = q.filter(Order.company_id == company_id)
+            if org_cm:
+                q = q.filter(Order.org_cm == org_cm)
 
     elif metrica == "offerte":
         date_col = Opportunity.data_creazione_sap
@@ -95,6 +100,8 @@ def dashboard_chart(
         )
         if company_id:
             q = q.filter(Opportunity.company_id == company_id)
+        if org_cm:
+            q = q.filter(Opportunity.org_cm == org_cm)
 
     elif metrica == "nuovi_clienti":
         date_col = Company.sap_created_at
