@@ -731,7 +731,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
                "processed": total, "total": total}
 
-    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati  |  {total_li} righe")
+    log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {skipped} saltati  |  {total_li} righe")
 
 
 def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
