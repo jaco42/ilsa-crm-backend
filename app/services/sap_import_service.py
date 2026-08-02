@@ -489,14 +489,15 @@ def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
 # ---------------------------------------------------------------------------
 
 def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte_vinte: set, db: Session, mara_lookup: dict = None):
-    inserted = updated = identical = skipped = 0
+    inserted = updated = skipped = 0
     companies = _build_companies_lookup(db)
     total = len(offerte)
 
-    # Pre-carica offerte esistenti (1 SELECT invece di N)
+    # Solo id — niente ORM completo, niente confronto campi
     existing_opps = {
-        o.sap_document_id: o
-        for o in db.query(Opportunity).filter(Opportunity.sap_document_id.isnot(None)).all()
+        sap_id: opp_id
+        for opp_id, sap_id in db.query(Opportunity.id, Opportunity.sap_document_id)
+                                 .filter(Opportunity.sap_document_id.isnot(None)).all()
     }
 
     to_insert = []
@@ -527,19 +528,14 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                     "sap_creato_da": row.get("Creato") or None,
                 }
 
-                opp = existing_opps.get(sap_doc_id)
-                if opp:
-                    changed = {k: v for k, v in data.items() if v is not None and hasattr(opp, k) and _changed(opp, k, v)}
-                    if changed:
-                        pending_bulk_updates.append({"id": opp.id, **changed})
-                        updated += 1
-                    else:
-                        identical += 1
-                    processed_doc_ids.append(sap_doc_id)
+                opp_id = existing_opps.get(sap_doc_id)
+                if opp_id:
+                    pending_bulk_updates.append({"id": opp_id, **data})
+                    updated += 1
                 else:
                     to_insert.append(data)
-                    processed_doc_ids.append(sap_doc_id)
                     inserted += 1
+                processed_doc_ids.append(sap_doc_id)
 
         if len(pending_bulk_updates) >= _CHUNK:
             db.bulk_update_mappings(Opportunity, pending_bulk_updates)
@@ -547,10 +543,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             pending_bulk_updates = []
 
         if (i + 1) % 200 == 0:
-            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+            yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
-    log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update, {identical} identical — avvio commit opp finale")
+    log.info(f"[DEBUG] offerte loop done: {inserted} insert, {updated} update — avvio commit finale")
     if pending_bulk_updates:
         db.bulk_update_mappings(Opportunity, pending_bulk_updates)
     if to_insert:
@@ -558,7 +554,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
         db.add_all(new_opps)
         db.flush()
         for opp in new_opps:
-            existing_opps[opp.sap_document_id] = opp
+            existing_opps[opp.sap_document_id] = opp.id
     if pending_bulk_updates or to_insert:
         db.commit()
     log.info(f"[DEBUG] commit opp ok — avvio chunk line items su {len(processed_doc_ids)} doc")
@@ -567,7 +563,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
     total_li = 0
     for ci in range(0, len(processed_doc_ids), _CHUNK):
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
-        chunk_opp_ids = [existing_opps[d].id for d in chunk_doc_ids if d in existing_opps]
+        chunk_opp_ids = [existing_opps[d] for d in chunk_doc_ids if d in existing_opps]
         log.info(f"[DEBUG] chunk offerte {ci}–{ci+len(chunk_doc_ids)}: delete {len(chunk_opp_ids)} opp ids")
         if chunk_opp_ids:
             db.query(OfferLineItem).filter(
@@ -575,13 +571,13 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             ).delete(synchronize_session=False)
         chunk_li = []
         for doc_id in chunk_doc_ids:
-            opp = existing_opps.get(doc_id)
-            if not opp:
+            opp_id = existing_opps.get(doc_id)
+            if not opp_id:
                 continue
             for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
                 l1, l2 = _gerarchia_to_famiglia(gerarchia)
                 chunk_li.append(OfferLineItem(
-                    opportunity_id=opp.id,
+                    opportunity_id=opp_id,
                     codice_sap=codice or None,
                     descrizione_riga=definizione or None,
                     quantita=parse_decimal(qty),
@@ -596,10 +592,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
         db.commit()
         total_li += len(chunk_li)
         log.info(f"[DEBUG] chunk offerte {ci} ok: {len(chunk_li)} righe")
-        yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+        yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
                "processed": total, "total": total}
 
-    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate  |  {total_li} righe")
+    log.info(f"Offerte:    {inserted} inserite  |  {updated} aggiornate  |  {skipped} saltate  |  {total_li} righe")
 
 
 def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
@@ -615,23 +611,26 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
 # ---------------------------------------------------------------------------
 
 def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
-    inserted = updated = identical = skipped = 0
+    inserted = updated = skipped = 0
     companies = _build_companies_lookup(db)
     total = len(ordini)
 
-    # Pre-carica opportunities e orders esistenti (1 SELECT ciascuno)
-    opportunities = {
-        o.sap_document_id: o
-        for o in db.query(Opportunity).filter(Opportunity.sap_document_id.isnot(None)).all()
+    # Solo id — niente ORM completo, niente confronto campi
+    opp_id_by_doc = {
+        sap_id: (opp_id, stage)
+        for opp_id, sap_id, stage in db.query(Opportunity.id, Opportunity.sap_document_id, Opportunity.stage)
+                                        .filter(Opportunity.sap_document_id.isnot(None)).all()
     }
     existing_orders = {
-        o.sap_document_id: o
-        for o in db.query(Order).filter(Order.sap_document_id.isnot(None)).all()
+        sap_id: order_id
+        for order_id, sap_id in db.query(Order.id, Order.sap_document_id)
+                                   .filter(Order.sap_document_id.isnot(None)).all()
     }
 
     to_insert = []
     pending_bulk_updates = []
     processed_doc_ids = []
+    opp_ids_to_win = []
     _CHUNK = 300
 
     _records = ordini.to_dict('records')
@@ -646,11 +645,13 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                 skipped += 1
             else:
                 sap_offerta_id = offerta_per_ordine.get(sap_doc_id)
-                opportunity = opportunities.get(sap_offerta_id) if sap_offerta_id else None
+                opp_entry = opp_id_by_doc.get(sap_offerta_id) if sap_offerta_id else None
+                opp_id = opp_entry[0] if opp_entry else None
+                opp_stage = opp_entry[1] if opp_entry else None
 
                 data = {
                     "company_id": company.id,
-                    "opportunity_id": opportunity.id if opportunity else None,
+                    "opportunity_id": opp_id,
                     "sap_document_id": sap_doc_id,
                     "org_cm": row.get("OrgCm") or None,
                     "valore_totale": parse_decimal(row.get("Val.netto") or ""),
@@ -659,22 +660,17 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                     "sap_creato_da": row.get("Creato") or None,
                 }
 
-                order = existing_orders.get(sap_doc_id)
-                if order:
-                    changed = {k: v for k, v in data.items() if v is not None and hasattr(order, k) and _changed(order, k, v)}
-                    if changed:
-                        pending_bulk_updates.append({"id": order.id, **changed})
-                        updated += 1
-                    else:
-                        identical += 1
-                    processed_doc_ids.append(sap_doc_id)
+                order_id = existing_orders.get(sap_doc_id)
+                if order_id:
+                    pending_bulk_updates.append({"id": order_id, **data})
+                    updated += 1
                 else:
                     to_insert.append(data)
-                    processed_doc_ids.append(sap_doc_id)
                     inserted += 1
+                processed_doc_ids.append(sap_doc_id)
 
-                if opportunity and opportunity.stage == STAGE_OFFERTA:
-                    opportunity.stage = STAGE_VINTO
+                if opp_id and opp_stage == STAGE_OFFERTA:
+                    opp_ids_to_win.append(opp_id)
 
         if len(pending_bulk_updates) >= _CHUNK:
             db.bulk_update_mappings(Order, pending_bulk_updates)
@@ -682,7 +678,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             pending_bulk_updates = []
 
         if (i + 1) % 200 == 0:
-            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+            yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
                    "processed": i + 1, "total": total}
 
     if pending_bulk_updates:
@@ -692,8 +688,12 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         db.add_all(new_orders)
         db.flush()
         for order in new_orders:
-            existing_orders[order.sap_document_id] = order
-    if pending_bulk_updates or to_insert:
+            existing_orders[order.sap_document_id] = order.id
+    if opp_ids_to_win:
+        db.query(Opportunity).filter(Opportunity.id.in_(opp_ids_to_win)).update(
+            {"stage": STAGE_VINTO}, synchronize_session=False
+        )
+    if pending_bulk_updates or to_insert or opp_ids_to_win:
         db.commit()
 
     # Line items in chunk da 300 doc: delete vecchi + insert nuovi + commit + yield
@@ -701,20 +701,20 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
     total_li = 0
     for ci in range(0, len(processed_doc_ids), _CHUNK):
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
-        chunk_order_ids = [existing_orders[d].id for d in chunk_doc_ids if d in existing_orders]
+        chunk_order_ids = [existing_orders[d] for d in chunk_doc_ids if d in existing_orders]
         if chunk_order_ids:
             db.query(OrderLineItem).filter(
                 OrderLineItem.order_id.in_(chunk_order_ids)
             ).delete(synchronize_session=False)
         chunk_li = []
         for doc_id in chunk_doc_ids:
-            order = existing_orders.get(doc_id)
-            if not order:
+            order_id = existing_orders.get(doc_id)
+            if not order_id:
                 continue
             for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
                 l1, l2 = _gerarchia_to_famiglia(gerarchia)
                 chunk_li.append(OrderLineItem(
-                    order_id=order.id,
+                    order_id=order_id,
                     codice_sap=codice or None,
                     descrizione_riga=definizione or None,
                     quantita=parse_decimal(qty),
@@ -728,7 +728,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             db.add_all(chunk_li)
         db.commit()
         total_li += len(chunk_li)
-        yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
+        yield {"inserted": inserted, "updated": updated, "identical": 0, "skipped": skipped,
                "processed": total, "total": total}
 
     log.info(f"Ordini:     {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici  |  {skipped} saltati  |  {total_li} righe")
