@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, select, exists
+from sqlalchemy import func, select, exists, nullslast
 from app.database import get_db
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
@@ -119,7 +119,7 @@ def lista_ordini(
         'sap_document_id': Order.sap_document_id,
     }
     sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
-    order_expr = sort_col.asc() if sort_dir == 'asc' else sort_col.desc()
+    order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
     orders = q.order_by(order_expr).offset(offset).limit(limit).all()
 
     opp_ids = [o.opportunity_id for o in orders if o.opportunity_id]

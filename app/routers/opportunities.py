@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, case, select, exists
+from sqlalchemy import func, case, select, exists, nullslast
 from app.database import get_db
 from app.models.opportunity import Opportunity
 from app.models.offer_line_item import OfferLineItem
@@ -231,7 +231,7 @@ def lista_opportunity(
         sort_col = Company.ragione_sociale
     else:
         sort_col = _SORT_COLS.get(sort_by, Opportunity.data_creazione_sap)
-    order_expr = sort_col.asc() if sort_dir == 'asc' else sort_col.desc()
+    order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
     items = q.order_by(order_expr).offset(offset).limit(limit).all()
 
     opp_ids = [opp.id for opp in items]
