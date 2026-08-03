@@ -166,6 +166,8 @@ def _serialize(c: Contact):
         "company_id": str(c.company_id),
         "company_name": c.company.ragione_sociale if c.company else None,
         "paese": c.company.paese if c.company else None,
+        "agente_ilsa": c.company.agente_ilsa if c.company else None,
+        "agente_desco": c.company.agente_desco if c.company else None,
         "nome": c.nome,
         "ruolo": c.ruolo,
         "email": c.email,
