@@ -53,3 +53,35 @@ def require_admin(current_user=Depends(get_current_user)):
     if current_user.ruolo != RuoloUtente.admin:
         raise HTTPException(status_code=403, detail="Accesso riservato agli amministratori")
     return current_user
+
+
+def is_admin(user) -> bool:
+    from app.models.user import RuoloUtente
+    return user.ruolo == RuoloUtente.admin
+
+
+def company_agente_filter(user, query, Company):
+    """Applica filtro agente sulla query di Company se l'utente non è admin."""
+    if is_admin(user) or not user.zona_assegnata:
+        return query
+    from sqlalchemy import or_
+    return query.filter(
+        or_(
+            Company.agente_ilsa == user.zona_assegnata,
+            Company.agente_desco == user.zona_assegnata,
+        )
+    )
+
+
+def allowed_company_ids(user, db):
+    """Ritorna una subquery degli UUID di company accessibili dall'utente, o None se admin."""
+    if is_admin(user) or not user.zona_assegnata:
+        return None
+    from app.models.company import Company
+    from sqlalchemy import or_
+    return db.query(Company.id).filter(
+        or_(
+            Company.agente_ilsa == user.zona_assegnata,
+            Company.agente_desco == user.zona_assegnata,
+        )
+    ).subquery()

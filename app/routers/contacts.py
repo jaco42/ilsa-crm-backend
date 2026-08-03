@@ -4,7 +4,7 @@ from app.database import get_db
 from app.models.contact import Contact
 from app.models.company import Company
 from app.models.note import Note
-from app.auth import get_current_user
+from app.auth import get_current_user, allowed_company_ids
 
 router = APIRouter(prefix="/contacts", tags=["contacts"], dependencies=[Depends(get_current_user)])
 
@@ -17,11 +17,16 @@ def lista_contatti(
     ruolo: str | None = None,
     paese: str | None = None,
     storico_contatti: str | None = None,
+    agente: str | None = None,
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     query = db.query(Contact).join(Contact.company).options(joinedload(Contact.company))
+    subq = allowed_company_ids(current_user, db)
+    if subq is not None:
+        query = query.filter(Contact.company_id.in_(subq))
     if company_id:
         query = query.filter(Contact.company_id == company_id)
     if search:
@@ -37,6 +42,9 @@ def lista_contatti(
         query = query.filter(Company.paese == paese)
     if storico_contatti:
         query = query.filter(Contact.storico_contatti.ilike(f"%{storico_contatti}%"))
+    if agente:
+        from sqlalchemy import or_
+        query = query.filter(or_(Company.agente_ilsa == agente, Company.agente_desco == agente))
     query = query.order_by(Contact.nome)
     # When filtering by company, return all (used in AccountDetail/QuickCreate dropdowns)
     if company_id:
