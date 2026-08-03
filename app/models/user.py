@@ -1,7 +1,7 @@
 import uuid
 import enum
 from sqlalchemy import Column, String, Boolean, Enum, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from app.database import Base
 
 
@@ -18,7 +18,7 @@ class User(Base):
     nome = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
     ruolo = Column(Enum(RuoloUtente), nullable=False)
-    zona_assegnata = Column(String, nullable=True)
+    zone_assegnate = Column(ARRAY(String), nullable=True, default=[])
     attivo = Column(Boolean, default=True, nullable=False)
     password_hash = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -253,8 +253,8 @@ def lista_aziende(
     return {"total": total, "items": items}
 
 
-@router.get("/agenti")
-def lista_agenti(db: Session = Depends(get_db)):
+@router.get("/zone")
+def lista_zone(db: Session = Depends(get_db)):
     from sqlalchemy import text
     rows = db.execute(text("""
         SELECT agente, COUNT(*) AS cnt FROM (

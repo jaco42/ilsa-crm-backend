@@ -60,28 +60,34 @@ def is_admin(user) -> bool:
     return user.ruolo == RuoloUtente.admin
 
 
+def _user_zone(user) -> list:
+    return user.zone_assegnate or []
+
+
 def company_agente_filter(user, query, Company):
-    """Applica filtro agente sulla query di Company se l'utente non è admin."""
-    if is_admin(user) or not user.zona_assegnata:
+    """Applica filtro zona sulla query di Company se l'utente non è admin."""
+    zone = _user_zone(user)
+    if is_admin(user) or not zone:
         return query
     from sqlalchemy import or_
     return query.filter(
         or_(
-            Company.agente_ilsa == user.zona_assegnata,
-            Company.agente_desco == user.zona_assegnata,
+            Company.agente_ilsa.in_(zone),
+            Company.agente_desco.in_(zone),
         )
     )
 
 
 def allowed_company_ids(user, db):
     """Ritorna una subquery degli UUID di company accessibili dall'utente, o None se admin."""
-    if is_admin(user) or not user.zona_assegnata:
+    zone = _user_zone(user)
+    if is_admin(user) or not zone:
         return None
     from app.models.company import Company
     from sqlalchemy import or_
     return db.query(Company.id).filter(
         or_(
-            Company.agente_ilsa == user.zona_assegnata,
-            Company.agente_desco == user.zona_assegnata,
+            Company.agente_ilsa.in_(zone),
+            Company.agente_desco.in_(zone),
         )
     ).subquery()
