@@ -151,7 +151,8 @@ def lista_aziende(
     if storico_contatti:
         q = q.filter(Company.storico_contatti.ilike(f"%{storico_contatti}%"))
     if agente:
-        q = q.filter(Company.agente.ilike(f"%{agente}%"))
+        from sqlalchemy import or_
+        q = q.filter(or_(Company.agente_ilsa == agente, Company.agente_desco == agente))
     if tipo_attivita:
         q = q.filter(Company.tipo_attivita.ilike(f"%{tipo_attivita}%"))
 
@@ -235,7 +236,8 @@ def lista_aziende(
             "offerte_totali": int(row.offerte_attive) + int(row.offerte_scadute) + int(row.offerte_vinte) + int(row.offerte_perse),
             "ordini_totali": int(row.ordini_totali),
             "valore_ordini": float(row.valore_ordini),
-            "agente": c.agente,
+            "agente_ilsa": c.agente_ilsa,
+            "agente_desco": c.agente_desco,
             "ultima_interazione_sap": row.ultima_interazione_sap.isoformat() if row.ultima_interazione_sap else None,
             "storico_contatti": c.storico_contatti,
             "origin": c.origin,
@@ -284,7 +286,8 @@ def get_azienda(company_id: str, db: Session = Depends(get_db)):
         "email": company.email,
         "email_override": company.email_override,
         "status": company.status,
-        "agente": company.agente,
+        "agente_ilsa": company.agente_ilsa,
+        "agente_desco": company.agente_desco,
         "sap_customer_id": company.sap_customer_id,
         "sap_created_at": company.sap_created_at.isoformat() if company.sap_created_at else None,
         "origin": company.origin,
