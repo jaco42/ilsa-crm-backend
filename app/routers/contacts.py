@@ -26,7 +26,12 @@ def lista_contatti(
     query = db.query(Contact).join(Contact.company).options(joinedload(Contact.company))
     subq = allowed_company_ids(current_user, db)
     if subq is not None:
-        query = query.filter(Contact.company_id.in_(subq))
+        from sqlalchemy import or_
+        zone = current_user.zone_assegnate or []
+        query = query.filter(
+            Contact.company_id.in_(subq),
+            or_(Contact.zona.is_(None), Contact.zona.in_(zone)),
+        )
     if company_id:
         query = query.filter(Contact.company_id == company_id)
     if search:
@@ -154,6 +159,7 @@ def _serialize(c: Contact):
         "is_primary": c.is_primary,
         "storico_contatti": c.storico_contatti,
         "note": c.note,
+        "zona": c.zona,
         "created_by": c.created_by,
         "created_at": c.created_at.isoformat(),
         "updated_at": c.updated_at.isoformat(),

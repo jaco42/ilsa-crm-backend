@@ -7,7 +7,7 @@ from app.models.opportunity import Opportunity
 from app.models.offer_line_item import OfferLineItem
 from app.models.order import Order
 from app.models.company import Company
-from app.auth import get_current_user, allowed_company_ids
+from app.auth import get_current_user, allowed_doc_cond
 from app.services import funnel_service
 router = APIRouter(prefix="/opportunities", tags=["opportunities"], dependencies=[Depends(get_current_user)])
 
@@ -84,9 +84,9 @@ def stats_opportunity(
     )
 
     q = db.query(Opportunity)
-    subq = allowed_company_ids(current_user, db)
-    if subq is not None:
-        q = q.filter(Opportunity.company_id.in_(subq))
+    cond = allowed_doc_cond(current_user, Opportunity, Company)
+    if cond is not None:
+        q = q.filter(cond)
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
@@ -203,9 +203,9 @@ def lista_opportunity(
     today = date.today()
     company_joined = False
     q = db.query(Opportunity).options(joinedload(Opportunity.company))
-    subq = allowed_company_ids(current_user, db)
-    if subq is not None:
-        q = q.filter(Opportunity.company_id.in_(subq))
+    cond = allowed_doc_cond(current_user, Opportunity, Company)
+    if cond is not None:
+        q = q.filter(cond)
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)

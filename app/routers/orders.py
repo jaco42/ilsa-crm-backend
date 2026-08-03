@@ -7,7 +7,7 @@ from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
-from app.auth import get_current_user, allowed_company_ids
+from app.auth import get_current_user, allowed_doc_cond
 
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
@@ -62,9 +62,9 @@ def stats_ordini(
     current_user=Depends(get_current_user),
 ):
     q = db.query(Order)
-    subq = allowed_company_ids(current_user, db)
-    if subq is not None:
-        q = q.filter(Order.company_id.in_(subq))
+    cond = allowed_doc_cond(current_user, Order, Company)
+    if cond is not None:
+        q = q.filter(cond)
     if company_id:
         q = q.filter(Order.company_id == company_id)
     q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
@@ -121,9 +121,9 @@ def lista_ordini(
     current_user=Depends(get_current_user),
 ):
     q = db.query(Order).options(joinedload(Order.company))
-    subq = allowed_company_ids(current_user, db)
-    if subq is not None:
-        q = q.filter(Order.company_id.in_(subq))
+    cond = allowed_doc_cond(current_user, Order, Company)
+    if cond is not None:
+        q = q.filter(cond)
     if company_id:
         q = q.filter(Order.company_id == company_id)
     q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)

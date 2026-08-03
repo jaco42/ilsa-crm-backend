@@ -91,3 +91,21 @@ def allowed_company_ids(user, db):
             Company.agente_desco.in_(zone),
         )
     ).subquery()
+
+
+def allowed_doc_cond(user, entity, Company):
+    """
+    Condizione di filtro per offerte/ordini: l'agente vede solo i documenti
+    del suo canale (OC00 → agente_ilsa, OC02 → agente_desco).
+    Ritorna None per admin.
+    """
+    zone = _user_zone(user)
+    if is_admin(user) or not zone:
+        return None
+    from sqlalchemy import or_, and_, select
+    ilsa_sub = select(Company.id).where(Company.agente_ilsa.in_(zone))
+    desco_sub = select(Company.id).where(Company.agente_desco.in_(zone))
+    return or_(
+        and_(entity.company_id.in_(ilsa_sub), entity.org_cm == 'OC00'),
+        and_(entity.company_id.in_(desco_sub), entity.org_cm == 'OC02'),
+    )
