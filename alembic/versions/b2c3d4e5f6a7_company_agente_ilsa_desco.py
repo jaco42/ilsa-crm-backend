@@ -18,10 +18,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column('companies', 'agente', new_column_name='agente_ilsa')
-    op.add_column('companies', sa.Column('agente_desco', sa.String(), nullable=True))
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='companies' AND column_name='agente'
+            ) THEN
+                ALTER TABLE companies RENAME COLUMN agente TO agente_ilsa;
+            END IF;
+        END $$;
+    """)
+    op.execute("""
+        ALTER TABLE companies ADD COLUMN IF NOT EXISTS agente_desco VARCHAR;
+    """)
 
 
 def downgrade() -> None:
     op.drop_column('companies', 'agente_desco')
-    op.alter_column('companies', 'agente_ilsa', new_column_name='agente')
+    op.execute("ALTER TABLE companies RENAME COLUMN agente_ilsa TO agente")
