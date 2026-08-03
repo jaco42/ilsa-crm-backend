@@ -122,7 +122,11 @@ def lista_aziende(
     q = company_agente_filter(current_user, q, Company)
 
     if search:
-        q = q.filter(Company.ragione_sociale.ilike(f"%{search}%"))
+        from sqlalchemy import or_
+        q = q.filter(or_(
+            Company.ragione_sociale.ilike(f"%{search}%"),
+            Company.sap_customer_id.ilike(f"%{search}%"),
+        ))
     if partita_iva:
         q = q.filter(Company.partita_iva == partita_iva.strip())
     if status:

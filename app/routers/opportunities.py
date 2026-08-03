@@ -214,7 +214,8 @@ def lista_opportunity(
         company_joined = True
         q = q.filter(
             Opportunity.sap_document_id.ilike(f"%{search}%") |
-            Company.ragione_sociale.ilike(f"%{search}%")
+            Company.ragione_sociale.ilike(f"%{search}%") |
+            Company.sap_customer_id.ilike(f"%{search}%")
         )
     if stato == 'vinta':
         q = q.filter(Opportunity.stage == 'Chiuso Vinto')

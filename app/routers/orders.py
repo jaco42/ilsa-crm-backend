@@ -131,7 +131,8 @@ def lista_ordini(
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(
             Order.sap_document_id.ilike(f"%{search}%") |
-            Company.ragione_sociale.ilike(f"%{search}%")
+            Company.ragione_sociale.ilike(f"%{search}%") |
+            Company.sap_customer_id.ilike(f"%{search}%")
         )
     total = q.count()
     _SORT_COLS = {

@@ -36,9 +36,14 @@ def lista_contatti(
         query = query.filter(Contact.company_id == company_id)
     if search:
         q = f"%{search}%"
-        query = query.filter(
-            Contact.nome.ilike(q) | Contact.ruolo.ilike(q) | Contact.email.ilike(q)
-        )
+        from sqlalchemy import or_
+        query = query.filter(or_(
+            Contact.nome.ilike(q),
+            Contact.ruolo.ilike(q),
+            Contact.email.ilike(q),
+            Company.ragione_sociale.ilike(q),
+            Company.sap_customer_id.ilike(q),
+        ))
     if azienda:
         query = query.filter(Company.ragione_sociale == azienda)
     if ruolo:
