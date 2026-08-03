@@ -3,13 +3,30 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models.radar import RadarProdotto, RadarSegnalazione
-from app.auth import get_current_user
+from app.models.company import Company
+from app.auth import get_current_user, is_admin, _user_zone
 
 router = APIRouter(prefix="/radar", tags=["radar"], dependencies=[Depends(get_current_user)])
 
 
+@router.get("/categorie")
+def lista_categorie(db: Session = Depends(get_db)):
+    rows = db.query(RadarProdotto.categoria_l1, RadarProdotto.categoria_l2)\
+        .filter(RadarProdotto.merged_into_id == None)\
+        .distinct().all()
+    l1_set = sorted({r[0] for r in rows if r[0]})
+    l2_by_l1 = defaultdict(set)
+    for l1, l2 in rows:
+        if l1 and l2:
+            l2_by_l1[l1].add(l2)
+    return {"l1": l1_set, "l2_by_l1": {k: sorted(v) for k, v in l2_by_l1.items()}}
+
+
 @router.get("/")
-def lista_radar(db: Session = Depends(get_db)):
+def lista_radar(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    zone = _user_zone(current_user)
+    admin = is_admin(current_user)
+
     prodotti = (
         db.query(RadarProdotto)
         .filter(RadarProdotto.merged_into_id == None)
@@ -17,37 +34,50 @@ def lista_radar(db: Session = Depends(get_db)):
         .order_by(RadarProdotto.nome)
         .all()
     )
-    return [_serialize_prodotto(p) for p in prodotti if p.segnalazioni]
+
+    result = []
+    for p in prodotti:
+        visible = list(p.segnalazioni) if admin else [s for s in p.segnalazioni if s.zona in zone]
+        if not visible:
+            continue
+        result.append(_serialize_prodotto(p, visible))
+    return result
 
 
 @router.get("/prodotti/search")
-def search_prodotti(q: str = "", db: Session = Depends(get_db)):
-    prodotti = (
-        db.query(RadarProdotto)
-        .filter(RadarProdotto.merged_into_id == None)
-        .filter(RadarProdotto.nome.ilike(f"%{q}%"))
-        .order_by(RadarProdotto.nome)
-        .limit(10)
-        .all()
-    )
-    return [{"id": str(p.id), "nome": p.nome} for p in prodotti]
+def search_prodotti(q: str = "", l1: str = "", l2: str = "", db: Session = Depends(get_db)):
+    query = db.query(RadarProdotto).filter(RadarProdotto.merged_into_id == None)
+    if q:
+        query = query.filter(RadarProdotto.nome.ilike(f"%{q}%"))
+    if l1:
+        query = query.filter(RadarProdotto.categoria_l1 == l1)
+    if l2:
+        query = query.filter(RadarProdotto.categoria_l2 == l2)
+    prodotti = query.order_by(RadarProdotto.nome).limit(10).all()
+    return [{"id": str(p.id), "nome": p.nome, "categoria_l1": p.categoria_l1, "categoria_l2": p.categoria_l2} for p in prodotti]
 
 
 @router.get("/{prodotto_id}")
-def get_prodotto(prodotto_id: str, db: Session = Depends(get_db)):
+def get_prodotto(prodotto_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     prodotto = db.query(RadarProdotto).filter(RadarProdotto.id == prodotto_id).first()
     if not prodotto:
         raise HTTPException(status_code=404, detail="Prodotto non trovato")
-    segnalazioni = (
-        db.query(RadarSegnalazione)
-        .filter(RadarSegnalazione.prodotto_id == prodotto_id)
+
+    zone = _user_zone(current_user)
+    admin = is_admin(current_user)
+
+    q = db.query(RadarSegnalazione)\
+        .filter(RadarSegnalazione.prodotto_id == prodotto_id)\
         .options(joinedload(RadarSegnalazione.company), joinedload(RadarSegnalazione.agente))
-        .order_by(RadarSegnalazione.created_at.desc())
-        .all()
-    )
+    if not admin:
+        q = q.filter(RadarSegnalazione.zona.in_(zone))
+    segnalazioni = q.order_by(RadarSegnalazione.created_at.desc()).all()
+
     return {
         "id": str(prodotto.id),
         "nome": prodotto.nome,
+        "categoria_l1": prodotto.categoria_l1,
+        "categoria_l2": prodotto.categoria_l2,
         "created_at": prodotto.created_at.isoformat(),
         "segnalazioni": [_serialize_segnalazione(s) for s in segnalazioni],
     }
@@ -55,15 +85,31 @@ def get_prodotto(prodotto_id: str, db: Session = Depends(get_db)):
 
 @router.post("/prodotti")
 def crea_prodotto(data: dict, db: Session = Depends(get_db)):
-    prodotto = RadarProdotto(nome=data["nome"])
+    prodotto = RadarProdotto(
+        nome=data["nome"],
+        categoria_l1=data.get("categoria_l1"),
+        categoria_l2=data.get("categoria_l2"),
+    )
     db.add(prodotto)
     db.commit()
     db.refresh(prodotto)
-    return {"id": str(prodotto.id), "nome": prodotto.nome, "created_at": prodotto.created_at.isoformat()}
+    return {"id": str(prodotto.id), "nome": prodotto.nome, "categoria_l1": prodotto.categoria_l1, "categoria_l2": prodotto.categoria_l2, "created_at": prodotto.created_at.isoformat()}
 
 
 @router.post("/segnalazioni")
-def crea_segnalazione(data: dict, db: Session = Depends(get_db)):
+def crea_segnalazione(data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    zona = data.get("zona")
+    if not zona:
+        company_id = data.get("company_id")
+        if company_id:
+            company = db.query(Company).filter(Company.id == company_id).first()
+            if company:
+                user_zones = _user_zone(current_user)
+                if company.agente_ilsa in user_zones:
+                    zona = company.agente_ilsa
+                elif company.agente_desco in user_zones:
+                    zona = company.agente_desco
+
     s = RadarSegnalazione(
         prodotto_id=data["prodotto_id"],
         company_id=data["company_id"],
@@ -71,6 +117,7 @@ def crea_segnalazione(data: dict, db: Session = Depends(get_db)):
         unita=data.get("unita"),
         urgenza=data.get("urgenza"),
         note=data.get("note"),
+        zona=zona,
         created_by=data.get("created_by"),
         updated_by=data.get("updated_by"),
     )
@@ -105,13 +152,15 @@ def elimina_segnalazione(segnalazione_id: str, db: Session = Depends(get_db)):
     db.commit()
 
 
-def _serialize_prodotto(p: RadarProdotto):
-    segnalazioni = list(p.segnalazioni)
+def _serialize_prodotto(p: RadarProdotto, visible_segnalazioni=None):
+    segnalazioni = visible_segnalazioni if visible_segnalazioni is not None else list(p.segnalazioni)
     urgenze = [s.urgenza for s in segnalazioni if s.urgenza]
     ultima = max((s.created_at for s in segnalazioni), default=None)
     return {
         "id": str(p.id),
         "nome": p.nome,
+        "categoria_l1": p.categoria_l1,
+        "categoria_l2": p.categoria_l2,
         "n_aziende": len(segnalazioni),
         "quantita_totale": _aggrega_quantita(segnalazioni),
         "urgenza_max": _urgenza_max(urgenze),
@@ -131,6 +180,7 @@ def _serialize_segnalazione(s: RadarSegnalazione):
         "unita": s.unita,
         "urgenza": s.urgenza,
         "note": s.note,
+        "zona": s.zona,
         "created_by": str(s.created_by) if s.created_by else None,
         "updated_by": s.updated_by,
         "created_at": s.created_at.isoformat(),
