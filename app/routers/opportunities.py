@@ -7,7 +7,7 @@ from app.models.opportunity import Opportunity
 from app.models.offer_line_item import OfferLineItem
 from app.models.order import Order
 from app.models.company import Company
-from app.auth import get_current_user
+from app.auth import get_current_user, allowed_company_ids
 from app.services import funnel_service
 router = APIRouter(prefix="/opportunities", tags=["opportunities"], dependencies=[Depends(get_current_user)])
 
@@ -16,9 +16,16 @@ TODAY = date.today
 STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
 
 
-def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None, org_cm=None):
+def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None, org_cm=None, agente_zona=None):
     if agente:
         q = q.filter(Opportunity.sap_creato_da == agente)
+    if agente_zona:
+        from app.models.company import Company as CompanyModel
+        from sqlalchemy import or_
+        zona_sub = select(CompanyModel.id).where(
+            or_(CompanyModel.agente_ilsa == agente_zona, CompanyModel.agente_desco == agente_zona)
+        )
+        q = q.filter(Opportunity.company_id.in_(zona_sub))
     if org_cm:
         q = q.filter(Opportunity.org_cm == org_cm)
     if scadenza_dal:
@@ -48,8 +55,10 @@ def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_
 @router.get("/stats")
 def stats_opportunity(
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
     company_id: str = Query(None),
     agente: str = Query(None),
+    agente_zona: str = Query(None),
     scadenza_dal: date = Query(None),
     scadenza_al: date = Query(None),
     valore_min: float = Query(None),
@@ -75,9 +84,12 @@ def stats_opportunity(
     )
 
     q = db.query(Opportunity)
+    subq = allowed_company_ids(current_user, db)
+    if subq is not None:
+        q = q.filter(Opportunity.company_id.in_(subq))
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
 
     totale = q.count()
 
@@ -168,8 +180,10 @@ def stats_opportunity(
 @router.get("/")
 def lista_opportunity(
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
     company_id: str = Query(None),
     agente: str = Query(None),
+    agente_zona: str = Query(None),
     stato: str = Query(None),
     scadenza_dal: date = Query(None),
     scadenza_al: date = Query(None),
@@ -189,9 +203,12 @@ def lista_opportunity(
     today = date.today()
     company_joined = False
     q = db.query(Opportunity).options(joinedload(Opportunity.company))
+    subq = allowed_company_ids(current_user, db)
+    if subq is not None:
+        q = q.filter(Opportunity.company_id.in_(subq))
     if company_id:
         q = q.filter(Opportunity.company_id == company_id)
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
     if search:
         q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         company_joined = True

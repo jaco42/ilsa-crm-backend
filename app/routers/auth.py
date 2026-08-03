@@ -23,6 +23,7 @@ def login(data: dict, db: Session = Depends(get_db)):
             "nome": user.nome,
             "email": user.email,
             "ruolo": user.ruolo,
+            "zona_assegnata": user.zona_assegnata,
         },
     }
 
@@ -34,4 +35,5 @@ def me(current_user: User = Depends(get_current_user)):
         "nome": current_user.nome,
         "email": current_user.email,
         "ruolo": current_user.ruolo,
+        "zona_assegnata": current_user.zona_assegnata,
     }

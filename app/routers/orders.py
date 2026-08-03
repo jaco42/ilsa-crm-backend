@@ -7,14 +7,21 @@ from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
-from app.auth import get_current_user
+from app.auth import get_current_user, allowed_company_ids
 
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
 
-def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None):
+def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None, agente_zona=None):
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
+    if agente_zona:
+        from app.models.company import Company as CompanyModel
+        from sqlalchemy import or_
+        zona_sub = select(CompanyModel.id).where(
+            or_(CompanyModel.agente_ilsa == agente_zona, CompanyModel.agente_desco == agente_zona)
+        )
+        q = q.filter(Order.company_id.in_(zona_sub))
     if org_cm:
         q = q.filter(Order.org_cm == org_cm)
     if dal:
@@ -41,6 +48,7 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=N
 def stats_ordini(
     company_id: str = Query(None),
     agente: str = Query(None),
+    agente_zona: str = Query(None),
     dal: date = Query(None),
     al: date = Query(None),
     valore_min: float = Query(None),
@@ -51,11 +59,15 @@ def stats_ordini(
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     q = db.query(Order)
+    subq = allowed_company_ids(current_user, db)
+    if subq is not None:
+        q = q.filter(Order.company_id.in_(subq))
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
 
     totale = q.count()
 
@@ -92,6 +104,7 @@ def stats_ordini(
 def lista_ordini(
     company_id: str = Query(None),
     agente: str = Query(None),
+    agente_zona: str = Query(None),
     dal: date = Query(None),
     al: date = Query(None),
     valore_min: float = Query(None),
@@ -105,11 +118,15 @@ def lista_ordini(
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     q = db.query(Order).options(joinedload(Order.company))
+    subq = allowed_company_ids(current_user, db)
+    if subq is not None:
+        q = q.filter(Order.company_id.in_(subq))
     if company_id:
         q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
     if search:
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(

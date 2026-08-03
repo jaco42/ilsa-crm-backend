@@ -8,7 +8,7 @@ from app.models.order_line_item import OrderLineItem
 from app.models.offer_line_item import OfferLineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
-from app.auth import get_current_user
+from app.auth import get_current_user, allowed_company_ids
 from datetime import timedelta
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_user)])
@@ -23,6 +23,16 @@ def _since(months_back: int) -> date:
     return date(total // 12, total % 12 + 1, 1)
 
 
+def _agente_subq(agente, db):
+    from sqlalchemy import or_
+    from app.models.company import Company
+    if not agente:
+        return None
+    return db.query(Company.id).filter(
+        or_(Company.agente_ilsa == agente, Company.agente_desco == agente)
+    ).subquery()
+
+
 @router.get("/chart")
 def dashboard_chart(
     tf: str = Query("1A"),
@@ -32,12 +42,16 @@ def dashboard_chart(
     prodotto: str = Query(None),
     company_id: str = Query(None),
     org_cm: str = Query(None),
+    agente: str = Query(None),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     months_back = 36 if tf == "3A" else 12
     since = _since(months_back)
     by_quarter = tf == "3A"
     period_fn = "quarter" if by_quarter else "month"
+    allowed = allowed_company_ids(current_user, db)
+    agente_ids = _agente_subq(agente, db)
 
     if metrica == "fatturato":
         if categoria or prodotto:
@@ -47,6 +61,10 @@ def dashboard_chart(
                 li_filters.append(OrderLineItem.categoria == categoria)
             if prodotto:
                 li_filters.append(OrderLineItem.prodotto == prodotto)
+            if allowed is not None:
+                li_filters.append(Order.company_id.in_(allowed))
+            if agente_ids is not None:
+                li_filters.append(Order.company_id.in_(agente_ids))
             if company_id:
                 li_filters.append(Order.company_id == company_id)
             if org_cm:
@@ -62,6 +80,11 @@ def dashboard_chart(
             )
         elif data_dim == "cliente":
             date_col = Company.sap_created_at
+            cliente_filters = [date_col >= since, date_col.isnot(None)]
+            if allowed is not None:
+                cliente_filters.append(Company.id.in_(allowed))
+            if agente_ids is not None:
+                cliente_filters.append(Company.id.in_(agente_ids))
             q = (
                 db.query(
                     func.extract("year", date_col).label("anno"),
@@ -70,7 +93,7 @@ def dashboard_chart(
                 )
                 .join(Company, Order.company_id == Company.id)
                 .join(OrderLineItem, OrderLineItem.order_id == Order.id)
-                .filter(date_col >= since, date_col.isnot(None))
+                .filter(*cliente_filters)
             )
         else:
             date_col = Order.data_ordine if data_dim == "ordine" else Order.data_creazione_sap
@@ -83,6 +106,10 @@ def dashboard_chart(
                 .join(OrderLineItem, OrderLineItem.order_id == Order.id)
                 .filter(date_col >= since, date_col.isnot(None))
             )
+            if allowed is not None:
+                q = q.filter(Order.company_id.in_(allowed))
+            if agente_ids is not None:
+                q = q.filter(Order.company_id.in_(agente_ids))
             if company_id:
                 q = q.filter(Order.company_id == company_id)
             if org_cm:
@@ -98,6 +125,10 @@ def dashboard_chart(
             )
             .filter(date_col >= since, date_col.isnot(None))
         )
+        if allowed is not None:
+            q = q.filter(Opportunity.company_id.in_(allowed))
+        if agente_ids is not None:
+            q = q.filter(Opportunity.company_id.in_(agente_ids))
         if company_id:
             q = q.filter(Opportunity.company_id == company_id)
         if org_cm:
@@ -114,6 +145,10 @@ def dashboard_chart(
             .join(Order, Order.company_id == Company.id)
             .filter(date_col >= since, date_col.isnot(None))
         )
+        if allowed is not None:
+            q = q.filter(Company.id.in_(allowed))
+        if agente_ids is not None:
+            q = q.filter(Company.id.in_(agente_ids))
 
     else:
         return []
@@ -134,23 +169,35 @@ def dashboard_chart(
 def dashboard_kpi(
     dal: date = Query(...),
     al: date = Query(...),
+    agente: str = Query(None),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     today = date.today()
+    allowed = allowed_company_ids(current_user, db)
+    agente_ids = _agente_subq(agente, db)
 
-    fatturato = float(
+    fat_q = (
         db.query(func.coalesce(func.sum(OrderLineItem.totale_riga), 0))
         .join(Order, OrderLineItem.order_id == Order.id)
         .filter(Order.data_ordine >= dal, Order.data_ordine <= al)
-        .scalar() or 0
     )
+    if allowed is not None:
+        fat_q = fat_q.filter(Order.company_id.in_(allowed))
+    if agente_ids is not None:
+        fat_q = fat_q.filter(Order.company_id.in_(agente_ids))
+    fatturato = float(fat_q.scalar() or 0)
 
-    nuovi_clienti = int(
+    nc_q = (
         db.query(func.count(func.distinct(Company.id)))
         .join(Order, Order.company_id == Company.id)
         .filter(Company.sap_created_at >= dal, Company.sap_created_at <= al)
-        .scalar() or 0
     )
+    if allowed is not None:
+        nc_q = nc_q.filter(Company.id.in_(allowed))
+    if agente_ids is not None:
+        nc_q = nc_q.filter(Company.id.in_(agente_ids))
+    nuovi_clienti = int(nc_q.scalar() or 0)
 
     un_mese_fa = today - timedelta(days=30)
     scaduta_cond = (Opportunity.stage == "Offerta Mandata") & (
@@ -162,27 +209,32 @@ def dashboard_kpi(
         ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
     )
 
-    vinte, perse, scadute = db.query(
+    opp_q = db.query(
         func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),
         func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
         func.count(case((scaduta_cond, 1))),
     ).filter(
         Opportunity.data_creazione_sap >= dal,
         Opportunity.data_creazione_sap <= al,
-    ).one()
+    )
+    if allowed is not None:
+        opp_q = opp_q.filter(Opportunity.company_id.in_(allowed))
+    if agente_ids is not None:
+        opp_q = opp_q.filter(Opportunity.company_id.in_(agente_ids))
+    vinte, perse, scadute = opp_q.one()
     chiuse = vinte + perse + scadute
     win_rate = round(vinte / chiuse * 100) if chiuse else None
 
-    pipeline_valore = float(
-        db.query(func.coalesce(func.sum(Opportunity.valore_totale), 0))
-        .filter(attiva_cond)
-        .scalar() or 0
-    )
-    pipeline_count = int(
-        db.query(func.count(Opportunity.id))
-        .filter(attiva_cond)
-        .scalar() or 0
-    )
+    pipe_q = db.query(func.coalesce(func.sum(Opportunity.valore_totale), 0)).filter(attiva_cond)
+    pipe_count_q = db.query(func.count(Opportunity.id)).filter(attiva_cond)
+    if allowed is not None:
+        pipe_q = pipe_q.filter(Opportunity.company_id.in_(allowed))
+        pipe_count_q = pipe_count_q.filter(Opportunity.company_id.in_(allowed))
+    if agente_ids is not None:
+        pipe_q = pipe_q.filter(Opportunity.company_id.in_(agente_ids))
+        pipe_count_q = pipe_count_q.filter(Opportunity.company_id.in_(agente_ids))
+    pipeline_valore = float(pipe_q.scalar() or 0)
+    pipeline_count = int(pipe_count_q.scalar() or 0)
 
     return {
         "fatturato": fatturato,
@@ -198,12 +250,22 @@ def dashboard_per_famiglia(
     dal: date = Query(...),
     al: date = Query(...),
     company_id: str = Query(None),
+    agente: str = Query(None),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
+    allowed = allowed_company_ids(current_user, db)
+    agente_ids = _agente_subq(agente, db)
     base_ord = [Order.data_ordine >= dal, Order.data_ordine <= al,
                 OrderLineItem.categoria.isnot(None), OrderLineItem.categoria != ""]
     base_opp = [Opportunity.data_creazione_sap >= dal, Opportunity.data_creazione_sap <= al,
                 OfferLineItem.categoria.isnot(None), OfferLineItem.categoria != ""]
+    if allowed is not None:
+        base_ord.append(Order.company_id.in_(allowed))
+        base_opp.append(Opportunity.company_id.in_(allowed))
+    if agente_ids is not None:
+        base_ord.append(Order.company_id.in_(agente_ids))
+        base_opp.append(Opportunity.company_id.in_(agente_ids))
     if company_id:
         base_ord.append(Order.company_id == company_id)
         base_opp.append(Opportunity.company_id == company_id)

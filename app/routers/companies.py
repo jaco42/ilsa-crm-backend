@@ -7,7 +7,7 @@ from app.models.company import Company
 from app.models.opportunity import Opportunity
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
-from app.auth import get_current_user
+from app.auth import get_current_user, company_agente_filter
 from app.services.opportunity_stats import build_scaduta_attiva
 from app.config import settings
 
@@ -26,6 +26,7 @@ def _status_dinamico(c: Company) -> str:
 @router.get("/")
 def lista_aziende(
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
     search: str = Query(None),
     status: str = Query(None),
     paese: str = Query(None),
@@ -117,6 +118,8 @@ def lista_aziende(
         .outerjoin(last_opp, Company.id == last_opp.c.company_id)
         .outerjoin(last_order, Company.id == last_order.c.company_id)
     )
+
+    q = company_agente_filter(current_user, q, Company)
 
     if search:
         q = q.filter(Company.ragione_sociale.ilike(f"%{search}%"))
@@ -250,21 +253,32 @@ def lista_aziende(
     return {"total": total, "items": items}
 
 
+@router.get("/agenti")
+def lista_agenti(db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT agente, COUNT(*) AS cnt FROM (
+            SELECT agente_ilsa AS agente FROM companies WHERE agente_ilsa IS NOT NULL AND agente_ilsa != ''
+            UNION ALL
+            SELECT agente_desco FROM companies WHERE agente_desco IS NOT NULL AND agente_desco != ''
+        ) t GROUP BY agente ORDER BY cnt DESC, agente
+    """)).fetchall()
+    return [r[0] for r in rows]
+
+
 @router.get("/stats/counts")
-def stats_counts(db: Session = Depends(get_db)):
-    clienti = db.query(func.count(Company.id)).filter(Company.status == "cliente").scalar()
-    potenziali = db.query(func.count(Company.id)).filter(
-        Company.status != "cliente", Company.sap_customer_id != None
-    ).scalar()
-    lead = db.query(func.count(Company.id)).filter(
-        Company.status != "cliente", Company.sap_customer_id == None
-    ).scalar()
+def stats_counts(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    base = company_agente_filter(current_user, db.query(Company), Company)
+    clienti = base.filter(Company.status == "cliente").count()
+    potenziali = base.filter(Company.status != "cliente", Company.sap_customer_id != None).count()
+    lead = base.filter(Company.status != "cliente", Company.sap_customer_id == None).count()
     return {"clienti": clienti, "potenziali": potenziali, "lead": lead}
 
 
 @router.get("/{company_id}")
-def get_azienda(company_id: str, db: Session = Depends(get_db)):
-    company = db.query(Company).filter(Company.id == company_id).first()
+def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    q = company_agente_filter(current_user, db.query(Company), Company)
+    company = q.filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Azienda non trovata")
 
