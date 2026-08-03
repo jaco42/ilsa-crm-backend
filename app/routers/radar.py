@@ -148,7 +148,14 @@ def elimina_segnalazione(segnalazione_id: str, db: Session = Depends(get_db)):
     s = db.query(RadarSegnalazione).filter(RadarSegnalazione.id == segnalazione_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Segnalazione non trovata")
+    prodotto_id = s.prodotto_id
     db.delete(s)
+    db.flush()
+    remaining = db.query(RadarSegnalazione).filter(RadarSegnalazione.prodotto_id == prodotto_id).count()
+    if remaining == 0:
+        prodotto = db.query(RadarProdotto).filter(RadarProdotto.id == prodotto_id).first()
+        if prodotto:
+            db.delete(prodotto)
     db.commit()
 
 
