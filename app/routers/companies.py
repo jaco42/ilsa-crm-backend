@@ -208,6 +208,7 @@ def lista_aziende(
         "ordini_totali":         func.coalesce(order_stats.c.ordini_totali, 0),
         "valore_ordini":         func.coalesce(order_stats.c.valore_ordini, 0),
         "ultima_interazione_sap": func.greatest(last_opp.c.last_date, last_order.c.last_date),
+        "agente_ilsa":            Company.agente_ilsa,
     }
     col = sort_map.get(sort_by, Company.ragione_sociale)
     order_col = col.desc() if sort_dir == "desc" else col.asc()
@@ -257,11 +258,11 @@ def lista_aziende(
 def lista_zone(db: Session = Depends(get_db)):
     from sqlalchemy import text
     rows = db.execute(text("""
-        SELECT agente, COUNT(*) AS cnt FROM (
+        SELECT agente FROM (
             SELECT agente_ilsa AS agente FROM companies WHERE agente_ilsa IS NOT NULL AND agente_ilsa != ''
             UNION ALL
             SELECT agente_desco FROM companies WHERE agente_desco IS NOT NULL AND agente_desco != ''
-        ) t GROUP BY agente ORDER BY cnt DESC, agente
+        ) t GROUP BY agente ORDER BY agente
     """)).fetchall()
     return [r[0] for r in rows]
 
