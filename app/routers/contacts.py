@@ -69,7 +69,16 @@ def get_contatto(contact_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/")
-def crea_contatto(data: dict, db: Session = Depends(get_db)):
+def crea_contatto(data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    company_id = data.get('company_id')
+    if company_id and not data.get('zona'):
+        company = db.query(Company).filter(Company.id == company_id).first()
+        if company:
+            user_zones = current_user.zone_assegnate or []
+            if company.agente_ilsa in user_zones:
+                data['zona'] = company.agente_ilsa
+            elif company.agente_desco in user_zones:
+                data['zona'] = company.agente_desco
     contact = Contact(**data)
     db.add(contact)
     db.commit()
