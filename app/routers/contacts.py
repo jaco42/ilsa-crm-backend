@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import nullslast
 from app.database import get_db
 from app.models.contact import Contact
 from app.models.company import Company
@@ -18,6 +19,8 @@ def lista_contatti(
     paese: str | None = None,
     storico_contatti: str | None = None,
     agente: str | None = None,
+    sort_by: str = Query('nome'),
+    sort_dir: str = Query('asc'),
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -45,7 +48,7 @@ def lista_contatti(
             Company.sap_customer_id.ilike(q),
         ))
     if azienda:
-        query = query.filter(Company.ragione_sociale == azienda)
+        query = query.filter(Company.ragione_sociale.ilike(f"%{azienda}%"))
     if ruolo:
         query = query.filter(Contact.ruolo == ruolo)
     if paese:
@@ -55,7 +58,19 @@ def lista_contatti(
     if agente:
         from sqlalchemy import or_
         query = query.filter(or_(Company.agente_ilsa == agente, Company.agente_desco == agente))
-    query = query.order_by(Contact.nome)
+    _SORT_COLS = {
+        'nome':           Contact.nome,
+        'paese':          Company.paese,
+        'ragione_sociale': Company.ragione_sociale,
+        'ruolo':          Contact.ruolo,
+        'storico_contatti': Contact.storico_contatti,
+        'agente':         Company.agente_ilsa,
+        'updated_at':     Contact.updated_at,
+        'created_by':     Contact.created_by,
+    }
+    sort_col = _SORT_COLS.get(sort_by, Contact.nome)
+    order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
+    query = query.order_by(order_expr)
     # When filtering by company, return all (used in AccountDetail/QuickCreate dropdowns)
     if company_id:
         contacts = query.all()
