@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, select, exists, nullslast
+from sqlalchemy import func, select, exists, nullslast, case
 from app.database import get_db
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
@@ -12,7 +12,16 @@ from app.auth import get_current_user, allowed_doc_cond
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
 
 
-def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None, agente_zona=None):
+TIPO_DOC_GROUPS = {
+    "standard":  ["ZOI0", "ZOC0", "ZOE0"],
+    "garanzia":  ["ZSOG"],
+    "riparazione": ["ZRAS"],
+    "fiera":     ["ZFIN"],
+    "visione":   ["ZVIN"],
+    "amministrativo": ["ZAMM"],
+}
+
+def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None, agente_zona=None, tipo_doc=None):
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
     if agente_zona:
@@ -34,13 +43,16 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=N
         q = q.filter(Order.valore_totale <= valore_max)
     if categoria or prodotto:
         sub = select(OrderLineItem.order_id).where(
-            OrderLineItem.order_id == Order.id
+            OrderLineItem.order_id == Order.id,
+            OrderLineItem.totale_riga > 0,
         ).correlate(Order)
         if categoria:
             sub = sub.where(OrderLineItem.categoria == categoria)
         if prodotto:
             sub = sub.where(OrderLineItem.prodotto == prodotto)
         q = q.filter(exists(sub))
+    if tipo_doc and tipo_doc in TIPO_DOC_GROUPS:
+        q = q.filter(Order.tipo_doc.in_(TIPO_DOC_GROUPS[tipo_doc]))
     return q
 
 
@@ -56,6 +68,7 @@ def stats_ordini(
     categoria: str = Query(None),
     prodotto: str = Query(None),
     org_cm: str = Query(None),
+    tipo_doc: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
     db: Session = Depends(get_db),
@@ -66,8 +79,9 @@ def stats_ordini(
     if cond is not None:
         q = q.filter(cond)
     if company_id:
-        q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
+        merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
+        q = q.filter(Order.company_id.in_([company_id] + merged_ids))
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, tipo_doc=tipo_doc)
 
     totale = q.count()
 
@@ -82,10 +96,14 @@ def stats_ordini(
         q_joined = q_joined.filter(OrderLineItem.categoria == categoria)
     if prodotto:
         q_joined = q_joined.filter(OrderLineItem.prodotto == prodotto)
+    if categoria == 'Trasporti':
+        valore_expr = func.coalesce(func.sum(OrderLineItem.totale_riga), 0)
+    else:
+        valore_expr = func.coalesce(func.sum(case(((Order.contribuisce_fatturato == True) & (OrderLineItem.categoria != 'Trasporti'), OrderLineItem.totale_riga), else_=0)), 0)
     totale_ytd, valore_totale, da_offerte = (
         q_joined.with_entities(
             func.count(func.distinct(Order.id)),
-            func.coalesce(func.sum(OrderLineItem.totale_riga), 0),
+            valore_expr,
             func.count(func.distinct(Order.opportunity_id)),
         ).one()
     )
@@ -112,6 +130,7 @@ def lista_ordini(
     categoria: str = Query(None),
     prodotto: str = Query(None),
     org_cm: str = Query(None),
+    tipo_doc: str = Query(None),
     search: str = Query(None),
     sort_by: str = Query('data_ordine'),
     sort_dir: str = Query('desc'),
@@ -125,12 +144,13 @@ def lista_ordini(
     if cond is not None:
         q = q.filter(cond)
     if company_id:
-        q = q.filter(Order.company_id == company_id)
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
+        merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
+        q = q.filter(Order.company_id.in_([company_id] + merged_ids))
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, tipo_doc=tipo_doc)
     if search:
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(
-            Order.sap_document_id.ilike(f"%{search}%") |
+            Order.sap_document_id.ilike(f"{search}%") |
             Company.ragione_sociale.ilike(f"%{search}%") |
             Company.sap_customer_id.ilike(f"%{search}%")
         )
@@ -139,6 +159,8 @@ def lista_ordini(
         'data_ordine':    Order.data_ordine,
         'valore_totale':  Order.valore_totale,
         'sap_document_id': Order.sap_document_id,
+        'org_cm':         Order.org_cm,
+        'sap_creato_da':  Order.sap_creato_da,
     }
     sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
@@ -161,6 +183,9 @@ def lista_ordini(
             "data_creazione_sap": o.data_creazione_sap.isoformat() if o.data_creazione_sap else None,
             "sap_creato_da": o.sap_creato_da,
             "org_cm": o.org_cm,
+            "tipo_doc": o.tipo_doc,
+            "nota": o.nota,
+            "contribuisce_fatturato": o.contribuisce_fatturato,
         }
         for o in orders
     ]
@@ -181,6 +206,7 @@ def get_order_line_items(order_id: str, db: Session = Depends(get_db)):
             "totale_riga": float(i.totale_riga) if i.totale_riga is not None else None,
             "categoria": i.categoria,
             "prodotto": i.prodotto,
+            "nota": i.nota,
         }
         for i in items
     ]

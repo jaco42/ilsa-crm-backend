@@ -1,3 +1,4 @@
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import nullslast
@@ -19,6 +20,9 @@ def lista_contatti(
     paese: str | None = None,
     storico_contatti: str | None = None,
     agente: str | None = None,
+    created_by_f: str | None = None,
+    created_at_dal: date = Query(None),
+    created_at_al: date = Query(None),
     sort_by: str = Query('nome'),
     sort_dir: str = Query('asc'),
     limit: int = Query(100),
@@ -58,6 +62,12 @@ def lista_contatti(
     if agente:
         from sqlalchemy import or_
         query = query.filter(or_(Company.agente_ilsa == agente, Company.agente_desco == agente))
+    if created_by_f:
+        query = query.filter(Contact.created_by == created_by_f)
+    if created_at_dal:
+        query = query.filter(Contact.created_at >= created_at_dal)
+    if created_at_al:
+        query = query.filter(Contact.created_at <= created_at_al)
     _SORT_COLS = {
         'nome':           Contact.nome,
         'paese':          Company.paese,
@@ -80,6 +90,28 @@ def lista_contatti(
     return {"total": total, "items": [_serialize(c) for c in contacts]}
 
 
+@router.get("/meta")
+def contacts_meta(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    from sqlalchemy import select, or_
+    company_ids_with_contacts = select(Contact.company_id).distinct()
+    agenti_ilsa = db.query(Company.agente_ilsa).filter(
+        Company.id.in_(company_ids_with_contacts),
+        Company.agente_ilsa.isnot(None), Company.agente_ilsa != ''
+    ).distinct().all()
+    agenti_desco = db.query(Company.agente_desco).filter(
+        Company.id.in_(company_ids_with_contacts),
+        Company.agente_desco.isnot(None), Company.agente_desco != ''
+    ).distinct().all()
+    agenti = sorted(set([r[0] for r in agenti_ilsa] + [r[0] for r in agenti_desco]))
+    aggiornati = db.query(Contact.created_by).filter(
+        Contact.created_by.isnot(None), Contact.created_by != ''
+    ).distinct().order_by(Contact.created_by).all()
+    return {
+        "agenti": agenti,
+        "aggiornato_da": [r[0] for r in aggiornati],
+    }
+
+
 @router.get("/{contact_id}")
 def get_contatto(contact_id: str, db: Session = Depends(get_db)):
     contact = db.query(Contact).options(joinedload(Contact.company)).filter(Contact.id == contact_id).first()
@@ -94,11 +126,13 @@ def crea_contatto(data: dict, db: Session = Depends(get_db), current_user=Depend
     if company_id and not data.get('zona'):
         company = db.query(Company).filter(Company.id == company_id).first()
         if company:
-            user_zones = current_user.zone_assegnate or []
-            if company.agente_ilsa in user_zones:
+            if company.agente_ilsa and company.agente_desco:
+                pass  # entrambi gli agenti → zona None, visibile a entrambi
+            elif company.agente_ilsa:
                 data['zona'] = company.agente_ilsa
-            elif company.agente_desco in user_zones:
+            elif company.agente_desco:
                 data['zona'] = company.agente_desco
+    data['created_by'] = current_user.nome
     contact = Contact(**data)
     db.add(contact)
     db.commit()
@@ -108,10 +142,11 @@ def crea_contatto(data: dict, db: Session = Depends(get_db), current_user=Depend
 
 
 @router.patch("/{contact_id}")
-def aggiorna_contatto(contact_id: str, data: dict, db: Session = Depends(get_db)):
+def aggiorna_contatto(contact_id: str, data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     contact = db.query(Contact).options(joinedload(Contact.company)).filter(Contact.id == contact_id).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contatto non trovato")
+    data['created_by'] = current_user.nome
     for key, value in data.items():
         setattr(contact, key, value)
     db.commit()

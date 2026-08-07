@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Numeric, Date, DateTime, ForeignKey, func
+from sqlalchemy import Column, String, Text, Numeric, Date, DateTime, Boolean, ForeignKey, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -27,6 +27,10 @@ class Opportunity(Base):
     canale_acquisizione = Column(String, nullable=True)
     sap_document_id = Column(String, nullable=True, unique=True)
     org_cm = Column(String, nullable=True)
+    tipo_doc = Column(String, nullable=True)
+    committente_sap = Column(String, nullable=True)
+    nota = Column(Text, nullable=True)
+    contribuisce_fatturato = Column(Boolean, nullable=False, default=True)
     valore_totale = Column(Numeric, nullable=True)
     data_scadenza = Column(Date, nullable=True)
     data_creazione_sap = Column(Date, nullable=True)

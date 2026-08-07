@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey, func
+from sqlalchemy import Column, String, Text, Numeric, DateTime, ForeignKey, func
 from sqlalchemy.dialects.postgresql import UUID
 from app.database import Base
 
@@ -17,4 +17,5 @@ class OfferLineItem(Base):
     totale_riga = Column(Numeric, nullable=True)
     categoria = Column(String, nullable=True)
     prodotto = Column(String, nullable=True)
+    nota = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

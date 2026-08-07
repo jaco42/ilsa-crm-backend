@@ -23,6 +23,93 @@ def _status_dinamico(c: Company) -> str:
     return "lead"
 
 
+@router.post("/auto_assign_agenti")
+def auto_assign_agenti(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    if current_user.ruolo != 'admin':
+        raise HTTPException(status_code=403, detail="Solo gli admin possono eseguire questa operazione")
+    from sqlalchemy import func
+
+    # Precalcola top agente per (paese, provincia) in una sola query per linea
+    def build_top_map(col):
+        # rank() per trovare il primo per ogni gruppo paese+provincia
+        ranked = (
+            db.query(
+                Company.paese,
+                Company.provincia,
+                col,
+                func.rank().over(
+                    partition_by=[Company.paese, Company.provincia],
+                    order_by=func.count().desc()
+                ).label('rnk')
+            )
+            .filter(col.isnot(None), col != '', Company.paese.isnot(None))
+            .group_by(Company.paese, Company.provincia, col)
+            .subquery()
+        )
+        rows = db.query(ranked).filter(ranked.c.rnk == 1).all()
+        # (paese, provincia) -> agente, con fallback su (paese, None)
+        by_prov = {}
+        by_paese = {}
+        for r in rows:
+            if r.provincia:
+                by_prov[(r.paese, r.provincia)] = r[2]
+            else:
+                by_paese[r.paese] = r[2]
+        return by_prov, by_paese
+
+    ilsa_prov, ilsa_paese = build_top_map(Company.agente_ilsa)
+    desco_prov, desco_paese = build_top_map(Company.agente_desco)
+
+    def lookup(by_prov, by_paese, paese, provincia):
+        return by_prov.get((paese, provincia)) or by_paese.get(paese)
+
+    unassigned = db.query(Company).filter(
+        Company.is_visible == True,
+        Company.agente_ilsa.is_(None),
+        Company.agente_desco.is_(None),
+        Company.paese.isnot(None),
+    ).all()
+
+    updated = 0
+    for c in unassigned:
+        ilsa = lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
+        desco = lookup(desco_prov, desco_paese, c.paese, c.provincia)
+        if ilsa or desco:
+            c.agente_ilsa = ilsa
+            c.agente_desco = desco
+            updated += 1
+
+    db.commit()
+    return {"totale_senza_agente": len(unassigned), "aggiornate": updated}
+
+
+@router.get("/agenti_codes")
+def agenti_codes(db: Session = Depends(get_db)):
+    ilsa = [r[0] for r in db.query(Company.agente_ilsa)
+            .filter(Company.agente_ilsa.isnot(None), Company.agente_ilsa != '')
+            .distinct().order_by(Company.agente_ilsa).all()]
+    desco = [r[0] for r in db.query(Company.agente_desco)
+             .filter(Company.agente_desco.isnot(None), Company.agente_desco != '')
+             .distinct().order_by(Company.agente_desco).all()]
+    return {"ilsa": ilsa, "desco": desco}
+
+
+@router.get("/suggest_agente")
+def suggest_agente(paese: str = Query(None), provincia: str = Query(None), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+
+    def top(col):
+        q = db.query(col, func.count().label('n')).filter(col.isnot(None), col != '')
+        if paese:
+            q = q.filter(Company.paese == paese)
+            if paese == 'IT' and provincia:
+                q = q.filter(Company.provincia == provincia)
+        r = q.group_by(col).order_by(func.count().desc()).first()
+        return r[0] if r else None
+
+    return {"agente_ilsa": top(Company.agente_ilsa), "agente_desco": top(Company.agente_desco)}
+
+
 @router.get("/")
 def lista_aziende(
     db: Session = Depends(get_db),
@@ -120,6 +207,7 @@ def lista_aziende(
     )
 
     q = company_agente_filter(current_user, q, Company)
+    q = q.filter(Company.is_visible == True)
 
     if search:
         from sqlalchemy import or_
@@ -280,6 +368,114 @@ def stats_counts(db: Session = Depends(get_db), current_user=Depends(get_current
     return {"clienti": clienti, "potenziali": potenziali, "lead": lead}
 
 
+@router.get("/{company_id}/demerge_preview")
+def demerge_preview(company_id: str, db: Session = Depends(get_db)):
+    from app.models.contact import Contact
+    from app.models.note import Note
+    losers = db.query(Company).filter(Company.merged_into == company_id).all()
+    if not losers:
+        raise HTTPException(status_code=404, detail="Nessuna azienda inglobata trovata")
+    result = []
+    for loser in losers:
+        post_contacts = db.query(Contact).filter(
+            Contact.company_id == company_id,
+            Contact.created_at >= loser.merged_at,
+        ).all() if loser.merged_at else []
+        post_notes = db.query(Note).filter(
+            Note.company_id == company_id,
+            Note.created_at >= loser.merged_at,
+        ).all() if loser.merged_at else []
+        result.append({
+            "loser_id": str(loser.id),
+            "loser_ragione_sociale": loser.ragione_sociale,
+            "loser_sap_customer_id": loser.sap_customer_id,
+            "merged_at": loser.merged_at.isoformat() if loser.merged_at else None,
+            "contacts_post_merge": [{"id": str(c.id), "nome": c.nome, "ruolo": c.ruolo} for c in post_contacts],
+            "notes_post_merge": [{"id": str(n.id), "testo": n.testo[:100] if hasattr(n, 'testo') else "", "created_at": n.created_at.isoformat()} for n in post_notes],
+            "n_contacts_post_merge": len(post_contacts),
+            "n_notes_post_merge": len(post_notes),
+        })
+    return result
+
+
+@router.post("/{company_id}/demerge")
+def demerge(company_id: str, data: dict, db: Session = Depends(get_db)):
+    import uuid as _uuid
+    from app.models.contact import Contact
+    from app.models.note import Note
+    loser_id = data.get("loser_id")
+    strategy = data.get("strategy")  # "all_on_winner" | "all_on_loser" | "copy_to_both" | "manual"
+    manual_assignments = data.get("assignments", {})  # {"id": "winner"|"loser"|"both", ...}
+
+    loser = db.query(Company).filter(Company.id == loser_id, Company.merged_into == company_id).first()
+    if not loser:
+        raise HTTPException(status_code=404, detail="Azienda perdente non trovata o non inglobata in questa")
+
+    merged_at = loser.merged_at
+
+    # Sempre: riporta i contatti/note pre-merge del loser al loro posto
+    db.query(Contact).filter(Contact.original_company_id == loser_id).update(
+        {"company_id": loser_id, "original_company_id": None}, synchronize_session=False)
+    db.query(Note).filter(Note.original_company_id == loser_id).update(
+        {"company_id": loser_id, "original_company_id": None}, synchronize_session=False)
+
+    def _copy_contact(c: Contact, target_company_id: str):
+        db.add(Contact(
+            id=_uuid.uuid4(), company_id=target_company_id,
+            nome=c.nome, ruolo=c.ruolo, telefono=c.telefono, email=c.email,
+            is_primary=False, storico_contatti=c.storico_contatti,
+            note=c.note, zona=c.zona, created_by=c.created_by,
+        ))
+
+    def _copy_note(n: Note, target_company_id: str):
+        db.add(Note(
+            id=_uuid.uuid4(), company_id=target_company_id,
+            testo=n.testo, pinned=n.pinned, created_by=n.created_by,
+        ))
+
+    def _move_note_to_loser(note_filter):
+        # Quando si sposta una nota al loser, azzera contact_id/opportunity_id
+        # perché quei record appartengono al winner e non sarebbero raggiungibili
+        db.query(Note).filter(note_filter).update(
+            {"company_id": loser_id, "contact_id": None, "opportunity_id": None},
+            synchronize_session=False)
+
+    # Poi gestisci gli ambigui (post-merge) secondo la strategia scelta
+    if strategy == "all_on_loser" and merged_at:
+        db.query(Contact).filter(Contact.company_id == company_id, Contact.created_at >= merged_at).update(
+            {"company_id": loser_id}, synchronize_session=False)
+        _move_note_to_loser(
+            (Note.company_id == company_id) & (Note.created_at >= merged_at))
+    elif strategy == "copy_to_both" and merged_at:
+        for c in db.query(Contact).filter(Contact.company_id == company_id, Contact.created_at >= merged_at).all():
+            _copy_contact(c, loser_id)
+        for n in db.query(Note).filter(Note.company_id == company_id, Note.created_at >= merged_at).all():
+            _copy_note(n, loser_id)
+    elif strategy == "manual":
+        for record_id, target in manual_assignments.items():
+            if target == "both":
+                c = db.query(Contact).filter(Contact.id == record_id).first()
+                if c:
+                    _copy_contact(c, loser_id)
+                else:
+                    n = db.query(Note).filter(Note.id == record_id).first()
+                    if n:
+                        _copy_note(n, loser_id)
+            elif target == "loser":
+                if not db.query(Contact).filter(Contact.id == record_id).update({"company_id": loser_id}, synchronize_session=False):
+                    _move_note_to_loser(Note.id == record_id)
+            else:  # winner — rimane sul winner, nulla da fare
+                pass
+    # "all_on_winner": gli ambigui rimangono sul winner, nulla da fare
+
+    # Ripristina il perdente come visibile e scollega
+    loser.merged_into = None
+    loser.merged_at = None
+    loser.is_visible = True
+    db.commit()
+    return {"ok": True, "loser_id": loser_id}
+
+
 @router.get("/{company_id}")
 def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     q = company_agente_filter(current_user, db.query(Company), Company)
@@ -307,6 +503,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
         "status": company.status,
         "agente_ilsa": company.agente_ilsa,
         "agente_desco": company.agente_desco,
+        "agente_sap_locked": company.agente_sap_locked,
         "sap_customer_id": company.sap_customer_id,
         "sap_created_at": company.sap_created_at.isoformat() if company.sap_created_at else None,
         "origin": company.origin,
@@ -315,6 +512,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
         "created_at": company.created_at.date().isoformat() if company.created_at else None,
         "updated_at": company.updated_at.isoformat() if company.updated_at else None,
         "status_dinamico": status_dinamico,
+        "n_inglobate": db.query(Company).filter(Company.merged_into == company_id).count(),
     }
 
 
@@ -430,6 +628,8 @@ def aggiorna_azienda(company_id: str, data: dict, db: Session = Depends(get_db))
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Azienda non trovata")
+    if company.agente_sap_locked and ('agente_ilsa' in data or 'agente_desco' in data):
+        raise HTTPException(status_code=403, detail="Agente assegnato da SAP: non modificabile manualmente")
     for key, value in data.items():
         setattr(company, key, value)
     db.commit()

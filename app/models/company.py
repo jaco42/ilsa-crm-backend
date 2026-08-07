@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Boolean, Enum, DateTime, Date, func
+from sqlalchemy import Column, String, Boolean, Enum, DateTime, Date, func, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -39,10 +39,15 @@ class Company(Base):
     origin = Column(Enum(CompanyOrigin), nullable=False, default=CompanyOrigin.crm_manual)
     agente_ilsa = Column(String, nullable=True)
     agente_desco = Column(String, nullable=True)
+    agente_sap_locked = Column(Boolean, nullable=False, default=False)
     storico_contatti = Column(String, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    merged_into = Column(UUID(as_uuid=True), ForeignKey('companies.id'), nullable=True)
+    merged_at = Column(DateTime(timezone=True), nullable=True)
+    is_visible = Column(Boolean, nullable=False, default=True)
 
     contacts = relationship("Contact", back_populates="company")
     sap_ids_secondari = relationship("CompanySapId", back_populates="company")
+    aziende_inglobate = relationship("Company", foreign_keys=[merged_into], primaryjoin="Company.merged_into==Company.id")

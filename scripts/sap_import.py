@@ -50,6 +50,44 @@ SEP = "|"
 STAGE_VINTO = "Chiuso Vinto"
 STAGE_OFFERTA = "Offerta Mandata"
 
+TIPI_OFFERTA = {"ZOF0"}
+TIPI_ORDINE  = {"ZOI0", "ZOC0", "ZOE0", "ZRII", "ZRIC", "ZRIE", "ZRAS", "ZSOG", "ZAMM", "ZFIN", "ZVIN"}
+TIPI_SKIP    = {"ZACC"}
+TIPI_CONTRIBUISCE = {"ZOI0", "ZOC0", "ZOE0", "ZRII", "ZRIC", "ZRIE", "ZRAS"}
+
+_SFRIDI_KW = ("sfridi", "fridi", "rottami", "rottame")
+_ROYALTY_KW = ("importo dovuto da contratto",)
+
+def _is_sfridi(descrizione: str) -> bool:
+    if not descrizione:
+        return False
+    d = descrizione.lower()
+    return any(kw in d for kw in _SFRIDI_KW)
+
+def _is_royalty(descrizione: str) -> bool:
+    if not descrizione:
+        return False
+    d = descrizione.lower()
+    return any(kw in d for kw in _ROYALTY_KW)
+COMMITTENTI_NO_FATTURATO = {"1", "3865"}
+
+NOTA_DA_TIPO = {
+    "ZSOG": "Ord. sost. in garanzia",
+    "ZFIN": "Invio conto fiera",
+    "ZVIN": "Invio conto visione",
+}
+
+RF_DESC = {
+    "01": "Consegna fissata troppo tardi",
+    "02": "Qualità scadente",
+    "03": "Prezzo eccessivo",
+    "04": "Fornitore con servizio migliore",
+    "05": "Garanzia",
+    "10": "Richieste irragionevoli",
+    "11": "Consegna sostitutiva",
+    "50": "Operazione sospesa per chiarimenti",
+}
+
 # ---------------------------------------------------------------------------
 # Gerarchia prodotti → L1 (gr_merci) / L2 (categoria)
 # Fonte: listino Excel ILSA 2026 come master per L1.
@@ -195,8 +233,8 @@ def _gerarchia_to_famiglia(g: str):
     if g.startswith("SELF_"):
         return "Self Service", "Self service"
 
-    # --- Varie e Trasporti (ALTRO_GENE, non classificati) ---
-    return "Varie e Trasporti", "Varie e Trasporti"
+    # --- Trasporti (ALTRO_GENE, non classificati) ---
+    return "Trasporti", "Trasporti"
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +278,15 @@ def parse_decimal(val: str):
         return float(val)
     except ValueError:
         return None
+
+
+def _nota_riga(rf: str) -> str | None:
+    rf = rf.strip().lstrip("0") if rf else ""
+    rf = rf.zfill(2) if rf else ""
+    if not rf:
+        return None
+    desc = RF_DESC.get(rf, f"Codice {rf}")
+    return f"Prodotto annullato: {desc}"
 
 
 def parse_date(val: str):
@@ -425,7 +472,9 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
             skipped += 1
             continue
 
+        tipo_doc = get(row, "TpDV")
         sap_customer_id = get(row, "Committ.")
+
         company = companies.get(sap_customer_id)
         if not company:
             log.warning(f"Offerta {sap_doc_id}: cliente '{sap_customer_id}' non trovato — skip")
@@ -433,11 +482,16 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
             continue
 
         stage = STAGE_VINTO if sap_doc_id in offerte_vinte else STAGE_OFFERTA
+        contribuisce = sap_customer_id not in COMMITTENTI_NO_FATTURATO
 
         data = {
             "company_id": company.id,
             "sap_document_id": sap_doc_id,
             "stage": stage,
+            "tipo_doc": tipo_doc or None,
+            "committente_sap": sap_customer_id or None,
+            "nota": NOTA_DA_TIPO.get(tipo_doc) if tipo_doc else None,
+            "contribuisce_fatturato": contribuisce,
             "valore_totale": parse_decimal(get(row, "Val.netto")),
             "data_scadenza": parse_date(get(row, "Fine off.")),
             "data_creazione_sap": parse_date(get(row, "Data cr.")),
@@ -465,6 +519,11 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
         for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
             codice = get(riga, "Materiale")
             l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+            val = parse_decimal(get(riga, "Val.netto"))
+            if l1 is None:
+                if not val or val == 0:
+                    continue
+                l1, l2 = "Non categorizzati", "Non categorizzati"
             db.add(OfferLineItem(
                 opportunity_id=opp.id,
                 codice_sap=codice or None,
@@ -475,6 +534,7 @@ def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte
                 totale_riga=parse_decimal(get(riga, "Val.netto")),
                 categoria=l1,
                 prodotto=l2,
+                nota=_nota_riga(get(riga, "Rf")),
             ))
 
     db.commit()
@@ -500,7 +560,9 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
             skipped += 1
             continue
 
+        tipo_doc = get(row, "TpDV")
         sap_customer_id = get(row, "Committ.")
+
         company = companies.get(sap_customer_id)
         if not company:
             log.warning(f"Ordine {sap_doc_id}: cliente '{sap_customer_id}' non trovato — skip")
@@ -509,11 +571,16 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
 
         sap_offerta_id = offerta_per_ordine.get(sap_doc_id)
         opportunity = opportunities.get(sap_offerta_id) if sap_offerta_id else None
+        contribuisce = tipo_doc in TIPI_CONTRIBUISCE and sap_customer_id not in COMMITTENTI_NO_FATTURATO
 
         data = {
             "company_id": company.id,
             "opportunity_id": opportunity.id if opportunity else None,
             "sap_document_id": sap_doc_id,
+            "tipo_doc": tipo_doc or None,
+            "committente_sap": sap_customer_id or None,
+            "nota": NOTA_DA_TIPO.get(tipo_doc) if tipo_doc else None,
+            "contribuisce_fatturato": contribuisce,
             "valore_totale": parse_decimal(get(row, "Val.netto")),
             "data_ordine": parse_date(get(row, "Data doc.")),
             "data_creazione_sap": parse_date(get(row, "Data cr.")),
@@ -531,10 +598,42 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
             db.flush()
             inserted += 1
 
+        righe_doc = posizioni[posizioni["Doc. vend."] == sap_doc_id]
+
+        # ZAMM: importa solo sfridi e royalties, scarta tutto il resto
+        if tipo_doc == "ZAMM":
+            has_sfridi = any(_is_sfridi(get(r, "Definizione")) for _, r in righe_doc.iterrows())
+            has_royalty = any(_is_royalty(get(r, "Definizione")) for _, r in righe_doc.iterrows())
+            if not has_sfridi and not has_royalty:
+                # Rimuovi l'ordine appena inserito/aggiornato e salta
+                if order.id:
+                    db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
+                    db.delete(order)
+                skipped += 1
+                if inserted > 0:
+                    inserted -= 1
+                elif updated > 0:
+                    updated -= 1
+                continue
+            # Sfridi e royalties contribuiscono al fatturato
+            order.contribuisce_fatturato = True
+
         db.query(OrderLineItem).filter(OrderLineItem.order_id == order.id).delete()
-        for _, riga in posizioni[posizioni["Doc. vend."] == sap_doc_id].iterrows():
+        for _, riga in righe_doc.iterrows():
             codice = get(riga, "Materiale")
-            l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+            if tipo_doc == "ZAMM" and _is_royalty(get(riga, "Definizione")):
+                l1, l2 = "Royalties", "Royalties"
+            elif tipo_doc == "ZAMM" and _is_sfridi(get(riga, "Definizione")):
+                l1, l2 = "Vendita Sfridi", "Vendita Sfridi"
+            elif tipo_doc == "ZRAS":
+                l1, l2 = "Riparazioni", "Riparazioni"
+            else:
+                l1, l2 = _gerarchia_to_famiglia(get(riga, "Gerarchia prodotti"))
+            val = parse_decimal(get(riga, "Val.netto"))
+            if l1 is None:
+                if not val or val == 0:
+                    continue
+                l1, l2 = "Non categorizzati", "Non categorizzati"
             db.add(OrderLineItem(
                 order_id=order.id,
                 codice_sap=codice or None,
@@ -545,6 +644,7 @@ def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ord
                 totale_riga=parse_decimal(get(riga, "Val.netto")),
                 categoria=l1,
                 prodotto=l2,
+                nota=_nota_riga(get(riga, "Rf")) or NOTA_DA_TIPO.get(tipo_doc),
             ))
 
     db.commit()
@@ -568,8 +668,15 @@ def main():
     posizioni = load_csv(export_dir / "VBAP.CSV")
     flusso1   = load_csv(export_dir / "VBFA_off.CSV")
 
-    offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
-    ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
+    tipo_col = "TpDV" if "TpDV" in docvend.columns else None
+    if tipo_col:
+        docvend = docvend[~docvend[tipo_col].isin(TIPI_SKIP)]
+        offerte = docvend[docvend[tipo_col].isin(TIPI_OFFERTA)].copy()
+        ordini  = docvend[docvend[tipo_col].isin(TIPI_ORDINE)].copy()
+    else:
+        log.warning("Colonna TpDV non trovata — split per prefisso doc ID (fallback)")
+        offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
+        ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
     def _col(df, *names):
         for n in names:
             if n in df.columns:

@@ -14,6 +14,7 @@ class Note(Base):
     contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True)
     testo = Column(String, nullable=False)
     pinned = Column(Boolean, nullable=False, default=False)
+    original_company_id = Column(UUID(as_uuid=True), nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

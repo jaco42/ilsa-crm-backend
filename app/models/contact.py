@@ -18,6 +18,7 @@ class Contact(Base):
     storico_contatti = Column(String, nullable=True)
     note = Column(Text, nullable=True)
     zona = Column(String, nullable=True)
+    original_company_id = Column(UUID(as_uuid=True), nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

@@ -94,34 +94,32 @@ def _rank(company: Company) -> int:
 
 def merge_companies(survivor: Company, duplicate: Company, db) -> None:
     """
-    Rilinka tutti i record dal duplicato al survivor, poi elimina il duplicato.
-    Anagrafica: per ogni campo vince il record con status più alto
-    (cliente > potenziale > lead); se quel campo è vuoto si scende al livello inferiore.
-    Il codice SAP del duplicato viene salvato in company_sap_ids così i prossimi
-    import SAP lo riconoscono senza creare duplicati.
+    Merge: il perdente (duplicate) rimane nel DB ma nascosto (is_visible=False).
+    Ordini e offerte restano sull'UUID del perdente — il frontend del vincitore li aggrega.
+    Contatti e note vengono spostati al vincitore (sono ambigui post-merge).
+    La data_merge viene salvata per sapere cosa è stato creato prima/dopo.
     """
+    from datetime import datetime, timezone
     sid = survivor.id
     did = duplicate.id
 
-    # Rilink relazioni
-    db.query(Opportunity).filter(Opportunity.company_id == did).update({"company_id": sid}, synchronize_session=False)
-    db.query(Order).filter(Order.company_id == did).update({"company_id": sid}, synchronize_session=False)
-    db.query(Contact).filter(Contact.company_id == did).update({"company_id": sid}, synchronize_session=False)
-    db.query(Note).filter(Note.company_id == did).update({"company_id": sid}, synchronize_session=False)
+    # Contatti e note: spostati al survivor, conservando l'origine per il demerge
+    db.query(Contact).filter(Contact.company_id == did).update(
+        {"company_id": sid, "original_company_id": did}, synchronize_session=False)
+    db.query(Note).filter(Note.company_id == did).update(
+        {"company_id": sid, "original_company_id": did}, synchronize_session=False)
     db.query(RadarSegnalazione).filter(RadarSegnalazione.company_id == did).update({"company_id": sid}, synchronize_session=False)
 
-    # Rilink sap_ids_secondari del duplicato al survivor
-    db.query(CompanySapId).filter(CompanySapId.company_id == did).update({"company_id": sid}, synchronize_session=False)
+    # Ordini e offerte: rimangono sull'UUID del perdente (separabili al demerge)
+    # NON spostare: db.query(Order/Opportunity)...
 
-    # Salva il codice SAP del duplicato come secondario sul survivor
-    if duplicate.sap_customer_id and duplicate.sap_customer_id != survivor.sap_customer_id:
-        existing = db.query(CompanySapId).filter(CompanySapId.sap_customer_id == duplicate.sap_customer_id).first()
-        if not existing:
-            db.add(CompanySapId(company_id=sid, sap_customer_id=duplicate.sap_customer_id))
+    # Il perdente diventa nascosto e punta al vincitore
+    duplicate.merged_into = sid
+    duplicate.merged_at = datetime.now(timezone.utc)
+    duplicate.is_visible = False
 
-    # Anagrafica: ordina per rank, per ogni campo prende il primo valore non vuoto
+    # Anagrafica vincitore: arricchisci con campi mancanti dal perdente
     ordered = sorted([survivor, duplicate], key=_rank, reverse=True)
-
     for field in ("ragione_sociale", "partita_iva", "indirizzo", "citta", "cap",
                   "provincia", "paese", "telefono", "email", "tipo_attivita", "storico_contatti"):
         for record in ordered:
@@ -130,7 +128,7 @@ def merge_companies(survivor: Company, duplicate: Company, db) -> None:
                 setattr(survivor, field, val)
                 break
 
-    # Campi SAP: prende dal record col rank più alto che li ha
+    # Campi SAP vincitore
     for record in ordered:
         if record.sap_customer_id:
             survivor.sap_customer_id = record.sap_customer_id
@@ -138,8 +136,6 @@ def merge_companies(survivor: Company, duplicate: Company, db) -> None:
             survivor.status = record.status
             survivor.origin = record.origin
             break
-
-    db.delete(duplicate)
 
 
 def find_and_handle_duplicate(new_company_data: dict, db) -> tuple[bool, Company | None]:

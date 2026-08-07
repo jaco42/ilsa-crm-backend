@@ -823,6 +823,7 @@ def import_knvv(content: bytes, db: Session) -> dict:
             .update({
                 "agente_ilsa": ilsa.get(cliente_sap),
                 "agente_desco": desco.get(cliente_sap),
+                "agente_sap_locked": True,
             }, synchronize_session=False)
         )
         updated += n

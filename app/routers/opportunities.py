@@ -42,7 +42,8 @@ def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_
         q = q.filter(Opportunity.data_creazione_sap <= creazione_al)
     if categoria or prodotto:
         sub = select(OfferLineItem.opportunity_id).where(
-            OfferLineItem.opportunity_id == Opportunity.id
+            OfferLineItem.opportunity_id == Opportunity.id,
+            OfferLineItem.totale_riga > 0,
         )
         if categoria:
             sub = sub.where(OfferLineItem.categoria == categoria)
@@ -88,15 +89,17 @@ def stats_opportunity(
     if cond is not None:
         q = q.filter(cond)
     if company_id:
-        q = q.filter(Opportunity.company_id == company_id)
+        merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
+        q = q.filter(Opportunity.company_id.in_([company_id] + merged_ids))
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
 
     totale = q.count()
 
     # Pipeline (attive) — sempre senza filtro YTD: riflette lo stato attuale
+    cf = Opportunity.contribuisce_fatturato == True
     attive, valore_pipeline_opp = q.with_entities(
         func.count(case((attiva_cond, 1))),
-        func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0),
+        func.coalesce(func.sum(case((attiva_cond & cf, Opportunity.valore_totale))), 0),
     ).one()
 
     # Vinte/perse/scadute — filtrate per periodo KPI (YTD di default dal frontend)
@@ -110,8 +113,8 @@ def stats_opportunity(
         func.count(case((Opportunity.stage == 'Chiuso Vinto', 1))),
         func.count(case((Opportunity.stage.in_(STAGE_PERSA), 1))),
         func.count(case((scaduta_cond, 1))),
-        func.coalesce(func.sum(case((Opportunity.stage == 'Chiuso Vinto', Opportunity.valore_totale))), 0),
-        func.coalesce(func.sum(case((Opportunity.stage.in_(STAGE_PERSA) | scaduta_cond, Opportunity.valore_totale))), 0),
+        func.coalesce(func.sum(case(((Opportunity.stage == 'Chiuso Vinto') & cf, Opportunity.valore_totale))), 0),
+        func.coalesce(func.sum(case(((Opportunity.stage.in_(STAGE_PERSA) | scaduta_cond) & cf, Opportunity.valore_totale))), 0),
     ).one()
 
     if categoria or prodotto:
@@ -207,13 +210,14 @@ def lista_opportunity(
     if cond is not None:
         q = q.filter(cond)
     if company_id:
-        q = q.filter(Opportunity.company_id == company_id)
+        merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
+        q = q.filter(Opportunity.company_id.in_([company_id] + merged_ids))
     q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
     if search:
         q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         company_joined = True
         q = q.filter(
-            Opportunity.sap_document_id.ilike(f"%{search}%") |
+            Opportunity.sap_document_id.ilike(f"{search}%") |
             Company.ragione_sociale.ilike(f"%{search}%") |
             Company.sap_customer_id.ilike(f"%{search}%")
         )
@@ -246,6 +250,7 @@ def lista_opportunity(
         'valore_totale':      Opportunity.valore_totale,
         'sap_document_id':    Opportunity.sap_document_id,
         'sap_creato_da':      Opportunity.sap_creato_da,
+        'org_cm':             Opportunity.org_cm,
     }
     if sort_by == 'ragione_sociale':
         if not company_joined:
