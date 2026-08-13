@@ -703,8 +703,8 @@ async def stream_companies(
 
     return StreamingResponse(
         generate(),
-        media_type="application/x-ndjson",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 
@@ -911,6 +911,6 @@ async def import_sap_stream(
 
     return StreamingResponse(
         generate(),
-        media_type="application/x-ndjson",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
