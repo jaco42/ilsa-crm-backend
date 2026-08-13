@@ -71,7 +71,22 @@ def _auto_assign_agenti_bulk(db: Session) -> dict:
     def _lookup(by_prov, by_paese, paese, provincia):
         return by_prov.get((paese, provincia)) or by_paese.get(paese)
 
+    # Precomputa quali aziende hanno documenti ILSA e quali DESCO
     from sqlalchemy import or_
+    from app.models.opportunity import Opportunity
+    from app.models.order import Order as OrderModel
+    has_ilsa = set(
+        r[0] for r in db.query(Opportunity.company_id.distinct()).filter(Opportunity.org_cm == 'OC00').all()
+    ) | set(
+        r[0] for r in db.query(OrderModel.company_id.distinct()).filter(OrderModel.org_cm == 'OC00').all()
+    )
+    has_desco = set(
+        r[0] for r in db.query(Opportunity.company_id.distinct()).filter(Opportunity.org_cm == 'OC02').all()
+    ) | set(
+        r[0] for r in db.query(OrderModel.company_id.distinct()).filter(OrderModel.org_cm == 'OC02').all()
+    )
+    has_any = has_ilsa | has_desco
+
     unassigned = db.query(Company).filter(
         Company.is_visible == True,
         or_(Company.agente_ilsa.is_(None), Company.agente_desco.is_(None)),
@@ -81,12 +96,15 @@ def _auto_assign_agenti_bulk(db: Session) -> dict:
     updated = 0
     for c in unassigned:
         changed = False
-        if c.agente_ilsa is None:
+        no_docs = c.id not in has_any
+        # Assegna agente_ilsa solo se ha documenti ILSA o non ha documenti
+        if c.agente_ilsa is None and (c.id in has_ilsa or no_docs):
             ilsa = _lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
             if ilsa:
                 c.agente_ilsa = ilsa
                 changed = True
-        if c.agente_desco is None:
+        # Assegna agente_desco solo se ha documenti DESCO o non ha documenti
+        if c.agente_desco is None and (c.id in has_desco or no_docs):
             desco = _lookup(desco_prov, desco_paese, c.paese, c.provincia)
             if desco:
                 c.agente_desco = desco
