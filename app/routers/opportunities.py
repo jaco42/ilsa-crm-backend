@@ -241,8 +241,6 @@ def lista_opportunity(
             (Opportunity.data_scadenza >= today) |
             ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
         )
-    total = q.count()
-
     # Ordinamento server-side
     _SORT_COLS = {
         'data_creazione_sap': Opportunity.data_creazione_sap,
@@ -259,7 +257,9 @@ def lista_opportunity(
     else:
         sort_col = _SORT_COLS.get(sort_by, Opportunity.data_creazione_sap)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
-    items = q.order_by(order_expr).offset(offset).limit(limit).all()
+    rows = q.add_columns(func.count().over().label('_total')).order_by(order_expr).offset(offset).limit(limit).all()
+    total = rows[0]._total if rows else 0
+    items = [r[0] for r in rows]
 
     opp_ids = [opp.id for opp in items]
     orders = db.query(Order.opportunity_id, Order.id, Order.sap_document_id).filter(

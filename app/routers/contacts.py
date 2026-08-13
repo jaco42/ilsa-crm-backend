@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import nullslast
+from sqlalchemy import func, nullslast
 from app.database import get_db
 from app.models.contact import Contact
 from app.models.company import Company
@@ -85,8 +85,9 @@ def lista_contatti(
     if company_id:
         contacts = query.all()
         return [_serialize(c) for c in contacts]
-    total = query.count()
-    contacts = query.offset(offset).limit(limit).all()
+    rows = query.add_columns(func.count().over().label('_total')).offset(offset).limit(limit).all()
+    total = rows[0]._total if rows else 0
+    contacts = [r[0] for r in rows]
     return {"total": total, "items": [_serialize(c) for c in contacts]}
 
 

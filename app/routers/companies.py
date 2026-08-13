@@ -154,6 +154,7 @@ def lista_aziende(
         func.coalesce(func.sum(case((scaduta_cond, Opportunity.valore_totale))), 0).label("valore_offerte_scadute"),
         func.count(case((Opportunity.stage == "Chiuso Vinto", 1))).label("offerte_vinte"),
         func.count(case((Opportunity.stage == "Chiuso Perso", 1))).label("offerte_perse"),
+        func.max(Opportunity.data_creazione_sap).label("last_opp_date"),
     )
     if date_from:
         opp_q = opp_q.filter(Opportunity.data_creazione_sap >= date_from)
@@ -166,6 +167,7 @@ def lista_aziende(
             Order.company_id,
             func.count(func.distinct(Order.id)).label("ordini_totali"),
             func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore_ordini"),
+            func.max(Order.data_creazione_sap).label("last_order_date"),
         )
         .join(OrderLineItem, OrderLineItem.order_id == Order.id)
     )
@@ -174,18 +176,6 @@ def lista_aziende(
     if date_to:
         order_q = order_q.filter(Order.data_ordine <= date_to)
     order_stats = order_q.group_by(Order.company_id).subquery()
-
-    # Ultima interazione SAP = max(data_creazione_sap) tra offerte e ordini
-    last_opp = (
-        db.query(Opportunity.company_id, func.max(Opportunity.data_creazione_sap).label("last_date"))
-        .group_by(Opportunity.company_id)
-        .subquery()
-    )
-    last_order = (
-        db.query(Order.company_id, func.max(Order.data_creazione_sap).label("last_date"))
-        .group_by(Order.company_id)
-        .subquery()
-    )
 
     q = (
         db.query(
@@ -198,12 +188,10 @@ def lista_aziende(
             func.coalesce(opp_stats.c.offerte_perse, 0).label("offerte_perse"),
             func.coalesce(order_stats.c.ordini_totali, 0).label("ordini_totali"),
             func.coalesce(order_stats.c.valore_ordini, 0).label("valore_ordini"),
-            func.greatest(last_opp.c.last_date, last_order.c.last_date).label("ultima_interazione_sap"),
+            func.greatest(opp_stats.c.last_opp_date, order_stats.c.last_order_date).label("ultima_interazione_sap"),
         )
         .outerjoin(opp_stats, Company.id == opp_stats.c.company_id)
         .outerjoin(order_stats, Company.id == order_stats.c.company_id)
-        .outerjoin(last_opp, Company.id == last_opp.c.company_id)
-        .outerjoin(last_order, Company.id == last_order.c.company_id)
     )
 
     q = company_agente_filter(current_user, q, Company)
@@ -287,8 +275,6 @@ def lista_aziende(
     if max_valore is not None:
         q = q.filter(func.coalesce(order_stats.c.valore_ordini, 0) <= max_valore)
 
-    total = db.execute(select(func.count()).select_from(q.subquery())).scalar()
-
     sort_map = {
         "ragione_sociale":       Company.ragione_sociale,
         "offerte_attive":        func.coalesce(opp_stats.c.offerte_attive, 0),
@@ -299,13 +285,14 @@ def lista_aziende(
         "valore_offerte_scadute": func.coalesce(opp_stats.c.valore_offerte_scadute, 0),
         "ordini_totali":         func.coalesce(order_stats.c.ordini_totali, 0),
         "valore_ordini":         func.coalesce(order_stats.c.valore_ordini, 0),
-        "ultima_interazione_sap": func.greatest(last_opp.c.last_date, last_order.c.last_date),
+        "ultima_interazione_sap": func.greatest(opp_stats.c.last_opp_date, order_stats.c.last_order_date),
         "agente_ilsa":            Company.agente_ilsa,
     }
     col = sort_map.get(sort_by, Company.ragione_sociale)
     order_col = col.desc() if sort_dir == "desc" else col.asc()
 
-    rows = q.order_by(order_col).offset(offset).limit(limit).all()
+    rows = q.add_columns(func.count().over().label('_total')).order_by(order_col).offset(offset).limit(limit).all()
+    total = rows[0]._total if rows else 0
 
     items = []
     for row in rows:
@@ -361,11 +348,13 @@ def lista_zone(db: Session = Depends(get_db)):
 
 @router.get("/stats/counts")
 def stats_counts(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    base = company_agente_filter(current_user, db.query(Company), Company)
-    clienti = base.filter(Company.status == "cliente").count()
-    potenziali = base.filter(Company.status != "cliente", Company.sap_customer_id != None).count()
-    lead = base.filter(Company.status != "cliente", Company.sap_customer_id == None).count()
-    return {"clienti": clienti, "potenziali": potenziali, "lead": lead}
+    base = company_agente_filter(current_user, db.query(Company), Company).filter(Company.is_visible == True)
+    row = base.with_entities(
+        func.count(case((Company.status == "cliente", 1))).label("clienti"),
+        func.count(case(((Company.status != "cliente") & (Company.sap_customer_id != None), 1))).label("potenziali"),
+        func.count(case(((Company.status != "cliente") & (Company.sap_customer_id == None), 1))).label("lead"),
+    ).one()
+    return {"clienti": row.clienti, "potenziali": row.potenziali, "lead": row.lead}
 
 
 @router.get("/{company_id}/demerge_preview")

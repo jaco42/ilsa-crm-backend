@@ -157,7 +157,6 @@ def lista_ordini(
             Company.ragione_sociale.ilike(f"%{search}%") |
             Company.sap_customer_id.ilike(f"%{search}%")
         )
-    total = q.count()
     _SORT_COLS = {
         'data_ordine':    Order.data_ordine,
         'valore_totale':  Order.valore_totale,
@@ -167,7 +166,9 @@ def lista_ordini(
     }
     sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
-    orders = q.order_by(order_expr).offset(offset).limit(limit).all()
+    rows = q.add_columns(func.count().over().label('_total')).order_by(order_expr).offset(offset).limit(limit).all()
+    total = rows[0]._total if rows else 0
+    orders = [r[0] for r in rows]
 
     opp_ids = [o.opportunity_id for o in orders if o.opportunity_id]
     opps = db.query(Opportunity.id, Opportunity.sap_document_id).filter(Opportunity.id.in_(opp_ids)).all()
