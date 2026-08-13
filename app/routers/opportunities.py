@@ -16,7 +16,10 @@ TODAY = date.today
 STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
 
 
-def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None, org_cm=None, agente_zona=None):
+def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None, org_cm=None, agente_zona=None, sap_id=None):
+    if sap_id:
+        sap_sub = select(Company.id).where(Company.sap_customer_id == sap_id)
+        q = q.filter(Opportunity.company_id.in_(sap_sub))
     if agente:
         q = q.filter(Opportunity.sap_creato_da == agente)
     if agente_zona:
@@ -69,6 +72,7 @@ def stats_opportunity(
     categoria: str = Query(None),
     prodotto: str = Query(None),
     org_cm: str = Query(None),
+    sap_id: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
 ):
@@ -91,7 +95,7 @@ def stats_opportunity(
     if company_id:
         merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
         q = q.filter(Opportunity.company_id.in_([company_id] + merged_ids))
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, sap_id=sap_id)
 
     totale = q.count()
 
@@ -197,6 +201,7 @@ def lista_opportunity(
     categoria: str = Query(None),
     prodotto: str = Query(None),
     org_cm: str = Query(None),
+    sap_id: str = Query(None),
     search: str = Query(None),
     sort_by: str = Query('data_creazione_sap'),
     sort_dir: str = Query('desc'),
@@ -212,7 +217,7 @@ def lista_opportunity(
     if company_id:
         merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
         q = q.filter(Opportunity.company_id.in_([company_id] + merged_ids))
-    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona)
+    q = _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, sap_id=sap_id)
     if search:
         q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         company_joined = True

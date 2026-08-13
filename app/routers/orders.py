@@ -21,7 +21,11 @@ TIPO_DOC_GROUPS = {
     "amministrativo": ["ZAMM"],
 }
 
-def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None, agente_zona=None, tipo_doc=None):
+def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None, agente_zona=None, tipo_doc=None, sap_id=None):
+    if sap_id:
+        from app.models.company import Company as CompanyModel
+        sap_sub = select(CompanyModel.id).where(CompanyModel.sap_customer_id == sap_id)
+        q = q.filter(Order.company_id.in_(sap_sub))
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
     if agente_zona:
@@ -70,6 +74,7 @@ def stats_ordini(
     prodotto: str = Query(None),
     org_cm: str = Query(None),
     tipo_doc: str = Query(None),
+    sap_id: str = Query(None),
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
     db: Session = Depends(get_db),
@@ -82,7 +87,7 @@ def stats_ordini(
     if company_id:
         merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
         q = q.filter(Order.company_id.in_([company_id] + merged_ids))
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, tipo_doc=tipo_doc)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, tipo_doc=tipo_doc, sap_id=sap_id)
 
     totale = q.count()
 
@@ -134,6 +139,7 @@ def lista_ordini(
     prodotto: str = Query(None),
     org_cm: str = Query(None),
     tipo_doc: str = Query(None),
+    sap_id: str = Query(None),
     search: str = Query(None),
     sort_by: str = Query('data_ordine'),
     sort_dir: str = Query('desc'),
@@ -149,7 +155,7 @@ def lista_ordini(
     if company_id:
         merged_ids = [str(r[0]) for r in db.query(Company.id).filter(Company.merged_into == company_id).all()]
         q = q.filter(Order.company_id.in_([company_id] + merged_ids))
-    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, tipo_doc=tipo_doc)
+    q = _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=categoria, prodotto=prodotto, org_cm=org_cm, agente_zona=agente_zona, tipo_doc=tipo_doc, sap_id=sap_id)
     if search:
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         q = q.filter(
