@@ -802,6 +802,10 @@ async def import_sap_stream(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
 
+    def _chunk(data: dict) -> str:
+        line = json.dumps(data)
+        return line + (" " * max(0, 4096 - len(line))) + "\n"
+
     def generate():
         import gc
         from app.database import SessionLocal
@@ -813,7 +817,7 @@ async def import_sap_stream(
         db = SessionLocal()
         db.expire_on_commit = False
         try:
-            yield json.dumps({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."}) + "\n"
+            yield _chunk({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."})
 
             # MARA: carica solo 2 colonne, poi libera i bytes subito
             mara_b = file_bytes.pop("mara")
@@ -827,7 +831,7 @@ async def import_sap_stream(
             companies_stats = dict(_zero)
             for partial in import_companies_stream(clienti, db):
                 pct = 15 + int((partial["processed"] / max(partial["total"], 1)) * 30)
-                yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo aziende...", "stats": {"companies": partial}}) + "\n"
+                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo aziende...", "stats": {"companies": partial}})
                 companies_stats = partial
             del clienti; gc.collect()
 
@@ -845,10 +849,10 @@ async def import_sap_stream(
             offerta_per_ordine = dict(zip(succ, prec))
             del flusso, prec, succ; gc.collect()
 
-            yield json.dumps({
+            yield _chunk({
                 "type": "progress", "pct": 44,
                 "fase": f"Aziende ok — VBAK: {len(offerte_df)} offerte + {len(ordini_df)} ordini",
-            }) + "\n"
+            })
 
             # --- VBAP: 9 colonne su ~40, caricato per ultimo quando tutto il resto è libero ---
             posizioni = load_csv_bytes(file_bytes.pop("vbap"), file_type="vbap"); gc.collect()
@@ -857,7 +861,7 @@ async def import_sap_stream(
             prodotti_stats = dict(_zero)
             for partial in import_prodotti_stream(posizioni, db):
                 pct = 45 + int((partial["processed"] / max(partial["total"], 1)) * 15)
-                yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo prodotti...", "stats": {"companies": companies_stats, "prodotti": partial}}) + "\n"
+                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo prodotti...", "stats": {"companies": companies_stats, "prodotti": partial}})
                 prodotti_stats = partial
 
             # Indice posizioni costruito una sola volta — poi il DF viene liberato
@@ -869,17 +873,17 @@ async def import_sap_stream(
             if len(offerte_df) > 0:
                 for partial in import_offerte_stream(offerte_df, posizioni_by_doc, offerte_vinte, db, mara_lookup):
                     pct = 60 + int((partial["processed"] / max(partial["total"], 1)) * 20)
-                    yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo offerte...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": partial}}) + "\n"
+                    yield _chunk({"type": "progress", "pct": pct, "fase": "Importo offerte...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": partial}})
                     offerte_stats = partial
             else:
-                yield json.dumps({"type": "progress", "pct": 80, "fase": "Offerte: 0 righe nel VBAK con prefisso 5xxxxx", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats}}) + "\n"
+                yield _chunk({"type": "progress", "pct": 80, "fase": "Offerte: 0 righe nel VBAK con prefisso 5xxxxx", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats}})
             del offerte_df; gc.collect()
 
             # Ordini 80% → 99%
             ordini_stats = dict(_zero)
             for partial in import_ordini_stream(ordini_df, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
                 pct = 80 + int((partial["processed"] / max(partial["total"], 1)) * 19)
-                yield json.dumps({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}}) + "\n"
+                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}})
                 ordini_stats = partial
             del ordini_df, posizioni_by_doc; gc.collect()
 
@@ -887,21 +891,21 @@ async def import_sap_stream(
             knvv_b = file_bytes.pop("knvv", b"")
             if knvv_b:
                 from app.services.sap_import_service import import_knvv
-                yield json.dumps({"type": "progress", "pct": 99, "fase": "Importo agenti KNVV..."}) + "\n"
+                yield _chunk({"type": "progress", "pct": 99, "fase": "Importo agenti KNVV..."})
                 knvv_stats = import_knvv(knvv_b, db)
 
-            yield json.dumps({"type": "done", "pct": 100, "stats": {
+            yield _chunk({"type": "done", "pct": 100, "stats": {
                 "companies": companies_stats,
                 "prodotti":  prodotti_stats,
                 "offerte":   offerte_stats,
                 "ordini":    ordini_stats,
                 "knvv":      knvv_stats,
-            }}) + "\n"
+            }})
         except Exception as e:
             import logging as _logging
             _logging.getLogger(__name__).exception(f"[SAP STREAM ERROR] {e}")
             db.rollback()
-            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+            yield _chunk({"type": "error", "message": str(e)})
         finally:
             db.close()
 
