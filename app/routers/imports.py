@@ -816,6 +816,7 @@ async def import_sap_stream(
         )
         db = SessionLocal()
         db.expire_on_commit = False
+        db.execute(__import__('sqlalchemy').text("SET idle_in_transaction_session_timeout = '120s'"))
         try:
             yield _chunk({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."})
 
