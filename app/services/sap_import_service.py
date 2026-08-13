@@ -23,6 +23,38 @@ ENCODING = "latin-1"
 STAGE_VINTO = "Chiuso Vinto"
 STAGE_OFFERTA = "Offerta Mandata"
 
+_TIPI_CONTRIBUISCE = {"ZOI0", "ZOC0", "ZOE0", "ZRII", "ZRIC", "ZRIE", "ZRAS"}
+_NOTA_DA_TIPO = {
+    "ZSOG": "Ord. sost. in garanzia",
+    "ZFIN": "Invio conto fiera",
+    "ZVIN": "Invio conto visione",
+}
+_SFRIDI_KW = ("sfridi", "fridi", "rottami", "rottame")
+_ROYALTY_KW = ("importo dovuto da contratto",)
+
+
+_RF_DESC = {
+    "01": "Consegna fissata troppo tardi", "02": "Qualità scadente",
+    "03": "Prezzo eccessivo", "04": "Fornitore con servizio migliore",
+    "05": "Garanzia", "10": "Richieste irragionevoli",
+    "11": "Consegna sostitutiva", "50": "Operazione sospesa per chiarimenti",
+}
+
+
+def _nota_riga(rf: str) -> str | None:
+    rf = (rf.strip().lstrip("0") if rf else "").zfill(2)
+    if not rf or rf == "00":
+        return None
+    return f"Prodotto annullato: {_RF_DESC.get(rf, f'Codice {rf}')}"
+
+
+def _is_sfridi(d: str) -> bool:
+    return any(kw in d.lower() for kw in _SFRIDI_KW) if d else False
+
+
+def _is_royalty(d: str) -> bool:
+    return any(kw in d.lower() for kw in _ROYALTY_KW) if d else False
+
 
 # ---------------------------------------------------------------------------
 # usecols — carica solo le colonne necessarie (-80÷97% RAM per DF)
@@ -30,10 +62,10 @@ STAGE_OFFERTA = "Offerta Mandata"
 
 _KNA1_COLS = {"Cliente", "Nome 1", "Nome 2", "Partita IVA 1", "Part.IVA", "Partita IVA",
               "Via", "Località", "Localit?", "CAP", "Rg", "Pse", "Telefono 1", "Data ap."}
-_VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc.", "OrgCm"}
+_VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc.", "OrgCm", "TpDV"}
 _VBAP_COLS = {"Doc. vend.", "Materiale", "Definizione",
               "Qtà ordine", "Qt? ordine", "Qt ordine", "UM", "Prz. netto", "Val.netto",
-              "Gerarchia prodotti"}
+              "Gerarchia prodotti", "Rf"}
 _VBFA_COLS = {"Doc.prec.", "Doc. prec.", "Doc. succ.", "Doc.succ."}
 _MARA_COLS = {"Materiale", "MATNR", "Gr.merci", "Gruppo merci", "MATKL", "Gr. merci"}
 
@@ -196,7 +228,7 @@ def _gerarchia_to_famiglia(g: str):
     if g.startswith("SELF_"):
         return "Self Service", "Self service"
 
-    return "Varie e Trasporti", "Varie e Trasporti"
+    return "Trasporti", "Trasporti"
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +347,7 @@ def _build_posizioni_index(posizioni: pd.DataFrame) -> dict:
             get(riga, "Prz. netto"),
             get(riga, "Val.netto"),
             get(riga, "Gerarchia prodotti"),
+            get(riga, "Rf"),
         ))
     return index
 
@@ -512,11 +545,13 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             skipped += 1
             continue
         stage = STAGE_VINTO if sap_doc_id in offerte_vinte else STAGE_OFFERTA
+        tipo_doc = row.get("TpDV") or None
         all_rows.append({
             "id": _uuid.uuid4(),
             "company_id": company.id,
             "sap_document_id": sap_doc_id,
             "stage": stage,
+            "tipo_doc": tipo_doc,
             "org_cm": row.get("OrgCm") or None,
             "valore_totale": parse_decimal(row.get("Val.netto") or ""),
             "data_scadenza": None if stage == STAGE_VINTO else parse_date(row.get("Fine off.") or ""),
@@ -540,6 +575,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             set_={
                 "company_id":        stmt.excluded.company_id,
                 "stage":             stmt.excluded.stage,
+                "tipo_doc":          _func.coalesce(stmt.excluded.tipo_doc, Opportunity.__table__.c.tipo_doc),
                 "org_cm":            stmt.excluded.org_cm,
                 "valore_totale":     stmt.excluded.valore_totale,
                 "data_scadenza":     stmt.excluded.data_scadenza,
@@ -582,7 +618,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             opp_id = existing_opps.get(doc_id)
             if not opp_id:
                 continue
-            for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
+            for (codice, definizione, qty, um, prz, val, gerarchia, rf) in posizioni_by_doc.get(doc_id, []):
                 l1, l2 = _gerarchia_to_famiglia(gerarchia)
                 chunk_li.append(OfferLineItem(
                     opportunity_id=opp_id,
@@ -594,6 +630,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                     totale_riga=parse_decimal(val),
                     categoria=l1,
                     prodotto=l2,
+                    nota=_nota_riga(rf),
                 ))
         if chunk_li:
             db.add_all(chunk_li)
@@ -621,7 +658,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
     import time as _time
     import uuid as _uuid
     from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from sqlalchemy import func as _func
+    from sqlalchemy import func as _func, case as _case
 
     skipped = 0
     companies = _build_companies_lookup(db)
@@ -651,11 +688,27 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         opp_entry = opp_id_by_doc.get(sap_offerta_id) if sap_offerta_id else None
         opp_id = opp_entry[0] if opp_entry else None
         opp_stage = opp_entry[1] if opp_entry else None
+        tipo_doc = row.get("TpDV") or None
+        if tipo_doc is not None:
+            if tipo_doc == "ZAMM":
+                righe = posizioni_by_doc.get(sap_doc_id, [])
+                has_special = any(_is_sfridi(r[1]) or _is_royalty(r[1]) for r in righe)
+                if not has_special:
+                    skipped += 1
+                    continue
+                contribuisce = True
+            else:
+                contribuisce = tipo_doc in _TIPI_CONTRIBUISCE
+        else:
+            contribuisce = True
         all_rows.append({
             "id": _uuid.uuid4(),
             "company_id": company.id,
             "opportunity_id": opp_id,
             "sap_document_id": sap_doc_id,
+            "tipo_doc": tipo_doc,
+            "nota": _NOTA_DA_TIPO.get(tipo_doc) if tipo_doc else None,
+            "contribuisce_fatturato": contribuisce,
             "org_cm": row.get("OrgCm") or None,
             "valore_totale": parse_decimal(row.get("Val.netto") or ""),
             "data_ordine": parse_date(row.get("Data doc.") or ""),
@@ -678,14 +731,20 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         stmt = stmt.on_conflict_do_update(
             index_elements=["sap_document_id"],
             set_={
-                "company_id":        stmt.excluded.company_id,
-                "opportunity_id":    stmt.excluded.opportunity_id,
-                "org_cm":            stmt.excluded.org_cm,
-                "valore_totale":     stmt.excluded.valore_totale,
-                "data_ordine":       stmt.excluded.data_ordine,
-                "data_creazione_sap":stmt.excluded.data_creazione_sap,
-                "sap_creato_da":     stmt.excluded.sap_creato_da,
-                "updated_at":        _func.now(),
+                "company_id":            stmt.excluded.company_id,
+                "opportunity_id":        stmt.excluded.opportunity_id,
+                "tipo_doc":              _func.coalesce(stmt.excluded.tipo_doc, Order.__table__.c.tipo_doc),
+                "nota":                  _func.coalesce(stmt.excluded.nota, Order.__table__.c.nota),
+                "contribuisce_fatturato": _case(
+                    (stmt.excluded.tipo_doc.isnot(None), stmt.excluded.contribuisce_fatturato),
+                    else_=Order.__table__.c.contribuisce_fatturato,
+                ),
+                "org_cm":                stmt.excluded.org_cm,
+                "valore_totale":         stmt.excluded.valore_totale,
+                "data_ordine":           stmt.excluded.data_ordine,
+                "data_creazione_sap":    stmt.excluded.data_creazione_sap,
+                "sap_creato_da":         stmt.excluded.sap_creato_da,
+                "updated_at":            _func.now(),
             }
         )
         db.execute(stmt)
@@ -706,6 +765,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                                    .filter(Order.sap_document_id.isnot(None)).all()
     }
     processed_doc_ids = [r["sap_document_id"] for r in all_rows]
+    tipo_doc_by_sap_id = {r["sap_document_id"]: r.get("tipo_doc") for r in all_rows}
 
     # Fase 4: line items in chunk da 300
     _CHUNK = 300
@@ -722,8 +782,19 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             order_id = existing_orders.get(doc_id)
             if not order_id:
                 continue
-            for (codice, definizione, qty, um, prz, val, gerarchia) in posizioni_by_doc.get(doc_id, []):
-                l1, l2 = _gerarchia_to_famiglia(gerarchia)
+            tipo_doc = tipo_doc_by_sap_id.get(doc_id)
+            for (codice, definizione, qty, um, prz, val, gerarchia, rf) in posizioni_by_doc.get(doc_id, []):
+                if tipo_doc == "ZAMM":
+                    if _is_royalty(definizione):
+                        l1, l2 = "Royalties", "Royalties"
+                    elif _is_sfridi(definizione):
+                        l1, l2 = "Vendita Sfridi", "Vendita Sfridi"
+                    else:
+                        continue
+                elif tipo_doc == "ZRAS":
+                    l1, l2 = "Riparazioni", "Riparazioni"
+                else:
+                    l1, l2 = _gerarchia_to_famiglia(gerarchia)
                 chunk_li.append(OrderLineItem(
                     order_id=order_id,
                     codice_sap=codice or None,
@@ -734,6 +805,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                     totale_riga=parse_decimal(val),
                     categoria=l1,
                     prodotto=l2,
+                    nota=_nota_riga(rf) or _NOTA_DA_TIPO.get(tipo_doc),
                 ))
         if chunk_li:
             db.add_all(chunk_li)

@@ -97,7 +97,9 @@ def stats_ordini(
     if prodotto:
         q_joined = q_joined.filter(OrderLineItem.prodotto == prodotto)
     if categoria == 'Trasporti':
-        valore_expr = func.coalesce(func.sum(OrderLineItem.totale_riga), 0)
+        valore_expr = func.coalesce(func.sum(case(
+            (Order.contribuisce_fatturato == True, OrderLineItem.totale_riga), else_=0
+        )), 0)
     else:
         valore_expr = func.coalesce(func.sum(case(((Order.contribuisce_fatturato == True) & (OrderLineItem.categoria != 'Trasporti'), OrderLineItem.totale_riga), else_=0)), 0)
     totale_ytd, valore_totale, da_offerte = (
