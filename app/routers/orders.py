@@ -44,8 +44,9 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=N
     if categoria or prodotto:
         sub = select(OrderLineItem.order_id).where(
             OrderLineItem.order_id == Order.id,
-            OrderLineItem.totale_riga > 0,
         ).correlate(Order)
+        if not categoria:
+            sub = sub.where(OrderLineItem.totale_riga > 0)
         if categoria:
             sub = sub.where(OrderLineItem.categoria == categoria)
         if prodotto:
