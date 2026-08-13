@@ -198,10 +198,17 @@ def lista_aziende(
     q = q.filter(Company.is_visible == True)
 
     if search:
-        from sqlalchemy import or_
+        from sqlalchemy import or_, exists
+        from sqlalchemy.orm import aliased
+        _Inglobata = aliased(Company)
+        merged_sap_match = exists().where(
+            _Inglobata.merged_into == Company.id,
+            _Inglobata.sap_customer_id.ilike(f"%{search}%"),
+        )
         q = q.filter(or_(
             Company.ragione_sociale.ilike(f"%{search}%"),
             Company.sap_customer_id.ilike(f"%{search}%"),
+            merged_sap_match,
         ))
     if partita_iva:
         q = q.filter(Company.partita_iva == partita_iva.strip())
@@ -474,6 +481,13 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
 
     status_dinamico = _status_dinamico(company)
 
+    inglobate_sap = [
+        r[0] for r in db.query(Company.sap_customer_id)
+        .filter(Company.merged_into == company_id, Company.sap_customer_id.isnot(None))
+        .all()
+    ]
+    sap_customer_ids = ([company.sap_customer_id] if company.sap_customer_id else []) + inglobate_sap
+
     return {
         "id": str(company.id),
         "ragione_sociale": company.ragione_sociale,
@@ -494,6 +508,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
         "agente_desco": company.agente_desco,
         "agente_sap_locked": company.agente_sap_locked,
         "sap_customer_id": company.sap_customer_id,
+        "sap_customer_ids": sap_customer_ids,
         "sap_created_at": company.sap_created_at.isoformat() if company.sap_created_at else None,
         "origin": company.origin,
         "storico_contatti": company.storico_contatti,
