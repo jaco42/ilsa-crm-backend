@@ -146,25 +146,33 @@ def lista_aziende(
 ):
     today = date.today()
     scaduta_cond, attiva_cond = build_scaduta_attiva(today)
-    opp_q = db.query(
-        Opportunity.company_id,
-        func.count(case((attiva_cond, 1))).label("offerte_attive"),
-        func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0).label("valore_offerte_attive"),
-        func.count(case((scaduta_cond, 1))).label("offerte_scadute"),
-        func.coalesce(func.sum(case((scaduta_cond, Opportunity.valore_totale))), 0).label("valore_offerte_scadute"),
-        func.count(case((Opportunity.stage == "Chiuso Vinto", 1))).label("offerte_vinte"),
-        func.count(case((Opportunity.stage == "Chiuso Perso", 1))).label("offerte_perse"),
-        func.max(Opportunity.data_creazione_sap).label("last_opp_date"),
+    from sqlalchemy.orm import aliased
+    _OppCompany = aliased(Company)
+    _effective_opp_company = func.coalesce(_OppCompany.merged_into, _OppCompany.id)
+    opp_q = (
+        db.query(
+            _effective_opp_company.label("effective_company_id"),
+            func.count(case((attiva_cond, 1))).label("offerte_attive"),
+            func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0).label("valore_offerte_attive"),
+            func.count(case((scaduta_cond, 1))).label("offerte_scadute"),
+            func.coalesce(func.sum(case((scaduta_cond, Opportunity.valore_totale))), 0).label("valore_offerte_scadute"),
+            func.count(case((Opportunity.stage == "Chiuso Vinto", 1))).label("offerte_vinte"),
+            func.count(case((Opportunity.stage == "Chiuso Perso", 1))).label("offerte_perse"),
+            func.max(Opportunity.data_creazione_sap).label("last_opp_date"),
+        )
+        .join(_OppCompany, _OppCompany.id == Opportunity.company_id)
     )
     if date_from:
         opp_q = opp_q.filter(Opportunity.data_creazione_sap >= date_from)
     if date_to:
         opp_q = opp_q.filter(Opportunity.data_creazione_sap <= date_to)
-    opp_stats = opp_q.group_by(Opportunity.company_id).subquery()
+    opp_stats = opp_q.group_by(_effective_opp_company).subquery()
 
+    _OrdCompany = aliased(Company)
+    _effective_ord_company = func.coalesce(_OrdCompany.merged_into, _OrdCompany.id)
     order_q = (
         db.query(
-            Order.company_id,
+            _effective_ord_company.label("effective_company_id"),
             func.count(func.distinct(Order.id)).label("ordini_totali"),
             func.coalesce(func.sum(case(
                 ((Order.contribuisce_fatturato == True) & (OrderLineItem.categoria != 'Trasporti'),
@@ -173,12 +181,13 @@ def lista_aziende(
             func.max(Order.data_creazione_sap).label("last_order_date"),
         )
         .join(OrderLineItem, OrderLineItem.order_id == Order.id)
+        .join(_OrdCompany, _OrdCompany.id == Order.company_id)
     )
     if date_from:
         order_q = order_q.filter(Order.data_ordine >= date_from)
     if date_to:
         order_q = order_q.filter(Order.data_ordine <= date_to)
-    order_stats = order_q.group_by(Order.company_id).subquery()
+    order_stats = order_q.group_by(_effective_ord_company).subquery()
 
     q = (
         db.query(
@@ -193,8 +202,8 @@ def lista_aziende(
             func.coalesce(order_stats.c.valore_ordini, 0).label("valore_ordini"),
             func.greatest(opp_stats.c.last_opp_date, order_stats.c.last_order_date).label("ultima_interazione_sap"),
         )
-        .outerjoin(opp_stats, Company.id == opp_stats.c.company_id)
-        .outerjoin(order_stats, Company.id == order_stats.c.company_id)
+        .outerjoin(opp_stats, Company.id == opp_stats.c.effective_company_id)
+        .outerjoin(order_stats, Company.id == order_stats.c.effective_company_id)
     )
 
     q = company_agente_filter(current_user, q, Company)
