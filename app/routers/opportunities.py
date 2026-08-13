@@ -259,6 +259,10 @@ def lista_opportunity(
         if not company_joined:
             q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         sort_col = Company.ragione_sociale
+    elif sort_by == 'agente':
+        if not company_joined:
+            q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
+        sort_col = case((Opportunity.org_cm == 'OC00', Company.agente_ilsa), else_=Company.agente_desco)
     else:
         sort_col = _SORT_COLS.get(sort_by, Opportunity.data_creazione_sap)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())

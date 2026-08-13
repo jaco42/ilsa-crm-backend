@@ -170,7 +170,11 @@ def lista_ordini(
         'org_cm':         Order.org_cm,
         'sap_creato_da':  Order.sap_creato_da,
     }
-    sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
+    if sort_by == 'agente':
+        q = q.join(Company, Order.company_id == Company.id, isouter=True)
+        sort_col = case((Order.org_cm == 'OC00', Company.agente_ilsa), else_=Company.agente_desco)
+    else:
+        sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
     rows = q.add_columns(func.count().over().label('_total')).order_by(order_expr).offset(offset).limit(limit).all()
     total = rows[0]._total if rows else 0
