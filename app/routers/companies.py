@@ -71,20 +71,27 @@ def _auto_assign_agenti_bulk(db: Session) -> dict:
     def _lookup(by_prov, by_paese, paese, provincia):
         return by_prov.get((paese, provincia)) or by_paese.get(paese)
 
+    from sqlalchemy import or_
     unassigned = db.query(Company).filter(
         Company.is_visible == True,
-        Company.agente_ilsa.is_(None),
-        Company.agente_desco.is_(None),
+        or_(Company.agente_ilsa.is_(None), Company.agente_desco.is_(None)),
         Company.paese.isnot(None),
     ).all()
 
     updated = 0
     for c in unassigned:
-        ilsa = _lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
-        desco = _lookup(desco_prov, desco_paese, c.paese, c.provincia)
-        if ilsa or desco:
-            c.agente_ilsa = ilsa
-            c.agente_desco = desco
+        changed = False
+        if c.agente_ilsa is None:
+            ilsa = _lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
+            if ilsa:
+                c.agente_ilsa = ilsa
+                changed = True
+        if c.agente_desco is None:
+            desco = _lookup(desco_prov, desco_paese, c.paese, c.provincia)
+            if desco:
+                c.agente_desco = desco
+                changed = True
+        if changed:
             updated += 1
 
     db.commit()
