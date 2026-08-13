@@ -895,12 +895,17 @@ async def import_sap_stream(
                 yield _chunk({"type": "progress", "pct": 99, "fase": "Importo agenti KNVV..."})
                 knvv_stats = import_knvv(knvv_b, db)
 
+            yield _chunk({"type": "progress", "pct": 99, "fase": "Auto-assegno agenti mancanti..."})
+            from app.routers.companies import _auto_assign_agenti_bulk
+            auto_assign_stats = _auto_assign_agenti_bulk(db)
+
             yield _chunk({"type": "done", "pct": 100, "stats": {
-                "companies": companies_stats,
-                "prodotti":  prodotti_stats,
-                "offerte":   offerte_stats,
-                "ordini":    ordini_stats,
-                "knvv":      knvv_stats,
+                "companies":     companies_stats,
+                "prodotti":      prodotti_stats,
+                "offerte":       offerte_stats,
+                "ordini":        ordini_stats,
+                "knvv":          knvv_stats,
+                "auto_agenti":   auto_assign_stats,
             }})
         except Exception as e:
             import logging as _logging

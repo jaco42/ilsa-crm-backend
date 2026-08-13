@@ -23,33 +23,41 @@ def _status_dinamico(c: Company) -> str:
     return "lead"
 
 
-@router.post("/auto_assign_agenti")
-def auto_assign_agenti(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    if current_user.ruolo != 'admin':
-        raise HTTPException(status_code=403, detail="Solo gli admin possono eseguire questa operazione")
-    from sqlalchemy import func
-
-    # Precalcola top agente per (paese, provincia) in una sola query per linea
-    def build_top_map(col):
-        # rank() per trovare il primo per ogni gruppo paese+provincia
-        ranked = (
-            db.query(
-                Company.paese,
-                Company.provincia,
-                col,
-                func.rank().over(
-                    partition_by=[Company.paese, Company.provincia],
-                    order_by=func.count().desc()
-                ).label('rnk')
-            )
-            .filter(col.isnot(None), col != '', Company.paese.isnot(None))
-            .group_by(Company.paese, Company.provincia, col)
-            .subquery()
+def _auto_assign_agenti_bulk(db: Session) -> dict:
+    """Assegna agente_ilsa/agente_desco alle aziende visibili che ne sono prive.
+    Non tocca aziende con agente_sap_locked=True (che hanno già agenti da SAP/ZN)."""
+    ranked_ilsa = (
+        db.query(
+            Company.paese,
+            Company.provincia,
+            Company.agente_ilsa,
+            func.rank().over(
+                partition_by=[Company.paese, Company.provincia],
+                order_by=func.count().desc()
+            ).label('rnk')
         )
+        .filter(Company.agente_ilsa.isnot(None), Company.agente_ilsa != '', Company.paese.isnot(None))
+        .group_by(Company.paese, Company.provincia, Company.agente_ilsa)
+        .subquery()
+    )
+    ranked_desco = (
+        db.query(
+            Company.paese,
+            Company.provincia,
+            Company.agente_desco,
+            func.rank().over(
+                partition_by=[Company.paese, Company.provincia],
+                order_by=func.count().desc()
+            ).label('rnk')
+        )
+        .filter(Company.agente_desco.isnot(None), Company.agente_desco != '', Company.paese.isnot(None))
+        .group_by(Company.paese, Company.provincia, Company.agente_desco)
+        .subquery()
+    )
+
+    def _build_map(ranked):
         rows = db.query(ranked).filter(ranked.c.rnk == 1).all()
-        # (paese, provincia) -> agente, con fallback su (paese, None)
-        by_prov = {}
-        by_paese = {}
+        by_prov, by_paese = {}, {}
         for r in rows:
             if r.provincia:
                 by_prov[(r.paese, r.provincia)] = r[2]
@@ -57,10 +65,10 @@ def auto_assign_agenti(db: Session = Depends(get_db), current_user=Depends(get_c
                 by_paese[r.paese] = r[2]
         return by_prov, by_paese
 
-    ilsa_prov, ilsa_paese = build_top_map(Company.agente_ilsa)
-    desco_prov, desco_paese = build_top_map(Company.agente_desco)
+    ilsa_prov, ilsa_paese = _build_map(ranked_ilsa)
+    desco_prov, desco_paese = _build_map(ranked_desco)
 
-    def lookup(by_prov, by_paese, paese, provincia):
+    def _lookup(by_prov, by_paese, paese, provincia):
         return by_prov.get((paese, provincia)) or by_paese.get(paese)
 
     unassigned = db.query(Company).filter(
@@ -72,8 +80,8 @@ def auto_assign_agenti(db: Session = Depends(get_db), current_user=Depends(get_c
 
     updated = 0
     for c in unassigned:
-        ilsa = lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
-        desco = lookup(desco_prov, desco_paese, c.paese, c.provincia)
+        ilsa = _lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
+        desco = _lookup(desco_prov, desco_paese, c.paese, c.provincia)
         if ilsa or desco:
             c.agente_ilsa = ilsa
             c.agente_desco = desco
@@ -81,6 +89,13 @@ def auto_assign_agenti(db: Session = Depends(get_db), current_user=Depends(get_c
 
     db.commit()
     return {"totale_senza_agente": len(unassigned), "aggiornate": updated}
+
+
+@router.post("/auto_assign_agenti")
+def auto_assign_agenti(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    if current_user.ruolo != 'admin':
+        raise HTTPException(status_code=403, detail="Solo gli admin possono eseguire questa operazione")
+    return _auto_assign_agenti_bulk(db)
 
 
 @router.get("/agenti_codes")
