@@ -120,8 +120,24 @@ def merge_companies(survivor: Company, duplicate: Company, db) -> None:
 
     # Anagrafica vincitore: arricchisci con campi mancanti dal perdente
     ordered = sorted([survivor, duplicate], key=_rank, reverse=True)
+
+    # paese + provincia sono una coppia: la provincia ha senso solo nel contesto del paese.
+    # Se il vincitore ha già un paese, riempi provincia solo da record con stesso paese.
+    if not survivor.paese:
+        for record in ordered:
+            if record.paese:
+                survivor.paese = record.paese
+                if not survivor.provincia:
+                    survivor.provincia = record.provincia
+                break
+    elif not survivor.provincia:
+        for record in ordered:
+            if record.paese == survivor.paese and record.provincia:
+                survivor.provincia = record.provincia
+                break
+
     for field in ("ragione_sociale", "partita_iva", "indirizzo", "citta", "cap",
-                  "provincia", "paese", "telefono", "email", "tipo_attivita", "storico_contatti"):
+                  "telefono", "email", "tipo_attivita", "storico_contatti"):
         for record in ordered:
             val = getattr(record, field)
             if val:

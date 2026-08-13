@@ -179,6 +179,7 @@ def lista_ordini(
             "id": str(o.id),
             "company_id": str(o.company_id),
             "ragione_sociale": o.company.ragione_sociale if o.company else None,
+            "company_sap_customer_id": o.company.sap_customer_id if o.company else None,
             "sap_document_id": o.sap_document_id,
             "opportunity_id": str(o.opportunity_id) if o.opportunity_id else None,
             "opp_sap_document_id": opp_sap.get(str(o.opportunity_id)) if o.opportunity_id else None,

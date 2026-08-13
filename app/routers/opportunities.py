@@ -271,6 +271,7 @@ def lista_opportunity(
         {
             **{c.name: getattr(opp, c.name) for c in Opportunity.__table__.columns},
             "ragione_sociale": opp.company.ragione_sociale if opp.company else None,
+            "company_sap_customer_id": opp.company.sap_customer_id if opp.company else None,
             "order_id": order_by_opp.get(str(opp.id), {}).get("order_id"),
             "order_sap_document_id": order_by_opp.get(str(opp.id), {}).get("order_sap_document_id"),
         }

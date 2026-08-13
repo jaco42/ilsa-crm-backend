@@ -166,7 +166,10 @@ def lista_aziende(
         db.query(
             Order.company_id,
             func.count(func.distinct(Order.id)).label("ordini_totali"),
-            func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore_ordini"),
+            func.coalesce(func.sum(case(
+                ((Order.contribuisce_fatturato == True) & (OrderLineItem.categoria != 'Trasporti'),
+                 OrderLineItem.totale_riga), else_=0
+            )), 0).label("valore_ordini"),
             func.max(Order.data_creazione_sap).label("last_order_date"),
         )
         .join(OrderLineItem, OrderLineItem.order_id == Order.id)
