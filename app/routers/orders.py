@@ -193,6 +193,7 @@ def lista_ordini(
             "data_ordine": o.data_ordine.isoformat() if o.data_ordine else None,
             "data_creazione_sap": o.data_creazione_sap.isoformat() if o.data_creazione_sap else None,
             "sap_creato_da": o.sap_creato_da,
+            "agente": (o.company.agente_ilsa if o.org_cm == 'OC00' else o.company.agente_desco) if o.company else None,
             "org_cm": o.org_cm,
             "tipo_doc": o.tipo_doc,
             "nota": o.nota,

@@ -279,6 +279,7 @@ def lista_opportunity(
             "company_sap_customer_id": opp.company.sap_customer_id if opp.company else None,
             "order_id": order_by_opp.get(str(opp.id), {}).get("order_id"),
             "order_sap_document_id": order_by_opp.get(str(opp.id), {}).get("order_sap_document_id"),
+            "agente": (opp.company.agente_ilsa if opp.org_cm == 'OC00' else opp.company.agente_desco) if opp.company else None,
         }
         for opp in items
     ]
