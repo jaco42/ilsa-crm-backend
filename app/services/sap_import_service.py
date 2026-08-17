@@ -8,13 +8,11 @@ from sqlalchemy.orm import Session
 from app.models.agent_assignment import AgentAssignment
 from app.models.company import Company, CompanyOrigin, CompanyStatus
 from app.models.company_sap_ids import CompanySapId
-from app.models.dedup import DeduplicaAlert
-from app.models.offer_line_item import OfferLineItem
+from app.models.line_item import LineItem
 from app.models.opportunity import Opportunity
 from app.models.order import Order
-from app.models.order_line_item import OrderLineItem
 from app.models.prodotto import Prodotto
-from app.services.dedup import find_and_handle_duplicate, score_match
+from app.services.merge import find_and_handle_duplicate, score_match
 
 log = logging.getLogger(__name__)
 
@@ -446,15 +444,6 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
                             db.flush()
                             existing[codice_cliente] = new_company
                             inserted += 1
-                            if match is not None:
-                                reason, s_nome, s_via = score_match(match, new_company)
-                                db.add(DeduplicaAlert(
-                                    company_a_id=match.id,
-                                    company_b_id=new_company.id,
-                                    reason=reason or "alert_simile",
-                                    score_nome=s_nome,
-                                    score_via=s_via if s_via else None,
-                                ))
 
         if (i + 1) % 200 == 0 or i == total - 1:
             yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
@@ -531,6 +520,11 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
     companies = _build_companies_lookup(db)
     total = len(offerte)
 
+    existing_sap_ids = set(
+        r[0] for r in db.query(Opportunity.sap_document_id)
+        .filter(Opportunity.sap_document_id.isnot(None)).all()
+    )
+
     # Fase 1: costruisci tutte le righe in Python — 0ms, nessun DB
     t0 = _time.monotonic()
     all_rows = []
@@ -558,8 +552,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
             "sap_creato_da": row.get("Creato") or None,
         })
+    inserted_count = sum(1 for r in all_rows if r["sap_document_id"] not in existing_sap_ids)
+    already_present_count = len(all_rows) - inserted_count
     log.info(f"[T] build rows: {_time.monotonic()-t0:.2f}s  ({len(all_rows)} valid, {skipped} skip)")
-    yield {"inserted": 0, "updated": 0, "identical": 0, "skipped": skipped,
+    yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0, "skipped": skipped,
            "processed": len(all_rows), "total": total}
 
     # Fase 2: upsert in chunk — 1 query SQL per chunk, non N query
@@ -588,7 +584,7 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
         db.commit()
         upserted += len(chunk)
         log.info(f"[T] upsert chunk {ci}-{ci+len(chunk)}: {_time.monotonic()-t_c:.2f}s")
-        yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
+        yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0, "skipped": skipped,
                "processed": upserted, "total": total}
     log.info(f"[T] upsert totale {len(all_rows)} opp: {_time.monotonic()-t_upsert:.2f}s")
 
@@ -610,8 +606,9 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
         chunk_opp_ids = [existing_opps[d] for d in chunk_doc_ids if d in existing_opps]
         if chunk_opp_ids:
-            db.query(OfferLineItem).filter(
-                OfferLineItem.opportunity_id.in_(chunk_opp_ids)
+            db.query(LineItem).filter(
+                LineItem.opportunity_id.in_(chunk_opp_ids),
+                LineItem.document_type == 'offer',
             ).delete(synchronize_session=False)
         chunk_li = []
         for doc_id in chunk_doc_ids:
@@ -620,7 +617,8 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                 continue
             for (codice, definizione, qty, um, prz, val, gerarchia, rf) in posizioni_by_doc.get(doc_id, []):
                 l1, l2 = _gerarchia_to_famiglia(gerarchia)
-                chunk_li.append(OfferLineItem(
+                chunk_li.append(LineItem(
+                    document_type='offer',
                     opportunity_id=opp_id,
                     codice_sap=codice or None,
                     descrizione_riga=definizione or None,
@@ -663,6 +661,11 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
     skipped = 0
     companies = _build_companies_lookup(db)
     total = len(ordini)
+
+    existing_order_sap_ids = set(
+        r[0] for r in db.query(Order.sap_document_id)
+        .filter(Order.sap_document_id.isnot(None)).all()
+    )
 
     opp_id_by_doc = {
         sap_id: (opp_id, stage)
@@ -717,8 +720,10 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         })
         if opp_id and opp_stage == STAGE_OFFERTA:
             opp_ids_to_win.append(opp_id)
+    ord_inserted_count = sum(1 for r in all_rows if r["sap_document_id"] not in existing_order_sap_ids)
+    ord_already_present_count = len(all_rows) - ord_inserted_count
     log.info(f"[T] build rows ordini: {_time.monotonic()-t0:.2f}s  ({len(all_rows)} valid, {skipped} skip)")
-    yield {"inserted": 0, "updated": 0, "identical": 0, "skipped": skipped,
+    yield {"inserted": ord_inserted_count, "already_present": ord_already_present_count, "identical": 0, "skipped": skipped,
            "processed": len(all_rows), "total": total}
 
     # Fase 2: upsert in chunk
@@ -755,7 +760,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         )
     db.commit()
     log.info(f"[T] upsert ordini {len(all_rows)}: {_time.monotonic()-t_upsert:.2f}s")
-    yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
+    yield {"inserted": ord_inserted_count, "already_present": ord_already_present_count, "identical": 0, "skipped": skipped,
            "processed": upserted, "total": total}
 
     # Fase 3: ricarica ids per line items
@@ -774,8 +779,9 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
         chunk_order_ids = [existing_orders[d] for d in chunk_doc_ids if d in existing_orders]
         if chunk_order_ids:
-            db.query(OrderLineItem).filter(
-                OrderLineItem.order_id.in_(chunk_order_ids)
+            db.query(LineItem).filter(
+                LineItem.order_id.in_(chunk_order_ids),
+                LineItem.document_type == 'order',
             ).delete(synchronize_session=False)
         chunk_li = []
         for doc_id in chunk_doc_ids:
@@ -795,7 +801,8 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                     l1, l2 = "Riparazioni", "Riparazioni"
                 else:
                     l1, l2 = _gerarchia_to_famiglia(gerarchia)
-                chunk_li.append(OrderLineItem(
+                chunk_li.append(LineItem(
+                    document_type='order',
                     order_id=order_id,
                     codice_sap=codice or None,
                     descrizione_riga=definizione or None,
@@ -884,21 +891,27 @@ def import_knvv(content: bytes, db: Session) -> dict:
         db.add(AgentAssignment(cliente_sap=cliente_sap, org_cm=org_cm, zn=zn))
 
     from app.models.company import Company
+    from collections import defaultdict
     ilsa = {cs: zn for (cs, org), zn in rows.items() if org == "OC00"}
     desco = {cs: zn for (cs, org), zn in rows.items() if org == "OC02"}
-    all_sap = set(ilsa) | set(desco)
+
+    # Raggruppa per agente → un UPDATE per agente invece di uno per cliente
+    ilsa_groups: dict[str, list] = defaultdict(list)
+    for cs, zn in ilsa.items():
+        ilsa_groups[zn].append(cs)
+    desco_groups: dict[str, list] = defaultdict(list)
+    for cs, zn in desco.items():
+        desco_groups[zn].append(cs)
+
     updated = 0
-    for cliente_sap in all_sap:
-        n = (
-            db.query(Company)
-            .filter(Company.sap_customer_id == cliente_sap)
-            .update({
-                "agente_ilsa": ilsa.get(cliente_sap),
-                "agente_desco": desco.get(cliente_sap),
-                "agente_sap_locked": True,
-            }, synchronize_session=False)
+    for agente, sap_ids in ilsa_groups.items():
+        updated += db.query(Company).filter(Company.sap_customer_id.in_(sap_ids)).update(
+            {"agente_ilsa": agente, "agente_ilsa_locked": True}, synchronize_session=False
         )
-        updated += n
+    for agente, sap_ids in desco_groups.items():
+        updated += db.query(Company).filter(Company.sap_customer_id.in_(sap_ids)).update(
+            {"agente_desco": agente, "agente_desco_locked": True}, synchronize_session=False
+        )
 
     db.commit()
     return {"inserted": len(rows), "aziende_aggiornate": updated}

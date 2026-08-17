@@ -265,6 +265,10 @@ async def run_contacts(
     updated_snapshots: list[dict] = []
     note_objects: list[Note] = []
 
+    companies_by_nome = {c.ragione_sociale.lower(): c for c in db.query(Company).all()}
+    contacts_by_email = {c.email.lower(): c for c in db.query(Contact).filter(Contact.email.isnot(None), Contact.email != '').all()}
+    contacts_by_company_nome = {(str(c.company_id), c.nome.lower()): c for c in db.query(Contact).all()}
+
     for i, row in enumerate(rows):
         line = i + 2
 
@@ -274,12 +278,10 @@ async def run_contacts(
             continue
 
         company_name = _get_val(row, col_map.get('company', {}))
-        company = None
-        if company_name:
-            company = db.query(Company).filter(Company.ragione_sociale.ilike(company_name)).first()
-            if not company:
-                skipped.append({"riga": line, "nome": nome, "motivo": "Azienda non trovata"})
-                continue
+        company = companies_by_nome.get(company_name.lower()) if company_name else None
+        if company_name and not company:
+            skipped.append({"riga": line, "nome": nome, "motivo": "Azienda non trovata"})
+            continue
 
         email = _get_val(row, col_map.get('email', {}))
         ruolo = _get_val(row, col_map.get('ruolo', {}))
@@ -287,14 +289,9 @@ async def run_contacts(
         note = _get_val(row, col_map.get('note', {}))
         storico_contatti = _get_val(row, col_map.get('storico_contatti', {}))
 
-        existing = None
-        if email:
-            existing = db.query(Contact).filter(Contact.email == email).first()
+        existing = contacts_by_email.get(email.lower()) if email else None
         if not existing and company:
-            existing = db.query(Contact).filter(
-                Contact.company_id == company.id,
-                Contact.nome.ilike(nome),
-            ).first()
+            existing = contacts_by_company_nome.get((str(company.id), nome.lower()))
 
         if existing:
             before = _snap_serializable(_snap(existing, _CONTACT_SNAP_FIELDS))
@@ -399,6 +396,9 @@ async def run_companies(
     updated_snapshots: list[dict] = []
     note_objects: list[Note] = []
 
+    existing_by_piva = {c.partita_iva: c for c in db.query(Company).filter(Company.partita_iva.isnot(None), Company.partita_iva != '').all()}
+    existing_by_nome = {c.ragione_sociale.lower(): c for c in db.query(Company).all()}
+
     for i, row in enumerate(rows):
         line = i + 2
 
@@ -442,11 +442,9 @@ async def run_companies(
             "storico_contatti": storico_contatti,
         }
 
-        existing = None
-        if partita_iva:
-            existing = db.query(Company).filter(Company.partita_iva == partita_iva).first()
+        existing = existing_by_piva.get(partita_iva) if partita_iva else None
         if not existing:
-            existing = db.query(Company).filter(Company.ragione_sociale.ilike(ragione_sociale)).first()
+            existing = existing_by_nome.get(ragione_sociale.lower())
 
         if existing:
             storico_merged = _append_storico(existing.storico_contatti, storico_contatti) if storico_contatti else existing.storico_contatti
@@ -588,6 +586,9 @@ async def stream_companies(
         total = len(rows)
 
         try:
+            existing_by_piva = {c.partita_iva: c for c in db.query(Company).filter(Company.partita_iva.isnot(None), Company.partita_iva != '').all()}
+            existing_by_nome = {c.ragione_sociale.lower(): c for c in db.query(Company).all()}
+
             for i, row in enumerate(rows):
                 line = i + 2
                 ragione_sociale = _get_val(row, col_map.get('ragione_sociale', {}))
@@ -618,11 +619,9 @@ async def stream_companies(
                             "email": email, "tipo_attivita": tipo_attivita,
                             "storico_contatti": storico_contatti,
                         }
-                        existing = None
-                        if partita_iva:
-                            existing = db.query(Company).filter(Company.partita_iva == partita_iva).first()
+                        existing = existing_by_piva.get(partita_iva) if partita_iva else None
                         if not existing:
-                            existing = db.query(Company).filter(Company.ragione_sociale.ilike(ragione_sociale)).first()
+                            existing = existing_by_nome.get(ragione_sociale.lower())
 
                         if existing:
                             storico_merged = _append_storico(existing.storico_contatti, storico_contatti) if storico_contatti else existing.storico_contatti
