@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Boolean, Enum, DateTime, Date, func, ForeignKey
+from sqlalchemy import Column, String, Boolean, Enum, DateTime, Date, func, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -37,9 +37,10 @@ class Company(Base):
     sap_customer_id = Column(String, nullable=True, unique=True)
     sap_created_at = Column(Date, nullable=True)
     origin = Column(Enum(CompanyOrigin), nullable=False, default=CompanyOrigin.crm_manual)
-    agente_ilsa = Column(String, nullable=True)
-    agente_desco = Column(String, nullable=True)
-    agente_sap_locked = Column(Boolean, nullable=False, default=False)
+    agente_ilsa = Column(String, nullable=True, index=True)
+    agente_desco = Column(String, nullable=True, index=True)
+    agente_ilsa_locked = Column(Boolean, nullable=False, default=False)
+    agente_desco_locked = Column(Boolean, nullable=False, default=False)
     storico_contatti = Column(String, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

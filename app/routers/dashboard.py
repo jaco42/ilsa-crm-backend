@@ -4,8 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, case
 from app.database import get_db
 from app.models.order import Order
-from app.models.order_line_item import OrderLineItem
-from app.models.offer_line_item import OfferLineItem
+from app.models.line_item import LineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user, allowed_company_ids
@@ -66,11 +65,11 @@ def dashboard_chart(
             date_col = Order.data_ordine
             li_filters = date_filters(date_col)
             li_filters.append(Order.contribuisce_fatturato == True)
-            li_filters.append(OrderLineItem.categoria != 'Trasporti')
+            li_filters.append(LineItem.categoria != 'Trasporti')
             if categoria:
-                li_filters.append(OrderLineItem.categoria == categoria)
+                li_filters.append(LineItem.categoria == categoria)
             if prodotto:
-                li_filters.append(OrderLineItem.prodotto == prodotto)
+                li_filters.append(LineItem.prodotto == prodotto)
             if allowed is not None:
                 li_filters.append(Order.company_id.in_(allowed))
             if agente_ids is not None:
@@ -83,16 +82,16 @@ def dashboard_chart(
                 db.query(
                     func.extract("year", date_col).label("anno"),
                     func.extract(period_fn, date_col).label("periodo"),
-                    func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
+                    func.coalesce(func.sum(LineItem.totale_riga), 0).label("valore"),
                 )
-                .join(OrderLineItem, OrderLineItem.order_id == Order.id)
+                .join(LineItem, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
                 .filter(*li_filters)
             )
         elif data_dim == "cliente":
             date_col = Company.sap_created_at
             cliente_filters = date_filters(date_col)
             cliente_filters.append(Order.contribuisce_fatturato == True)
-            cliente_filters.append(OrderLineItem.categoria != 'Trasporti')
+            cliente_filters.append(LineItem.categoria != 'Trasporti')
             if allowed is not None:
                 cliente_filters.append(Company.id.in_(allowed))
             if agente_ids is not None:
@@ -101,10 +100,10 @@ def dashboard_chart(
                 db.query(
                     func.extract("year", date_col).label("anno"),
                     func.extract(period_fn, date_col).label("periodo"),
-                    func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
+                    func.coalesce(func.sum(LineItem.totale_riga), 0).label("valore"),
                 )
                 .join(Company, Order.company_id == Company.id)
-                .join(OrderLineItem, OrderLineItem.order_id == Order.id)
+                .join(LineItem, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
                 .filter(*cliente_filters)
             )
         else:
@@ -113,10 +112,10 @@ def dashboard_chart(
                 db.query(
                     func.extract("year", date_col).label("anno"),
                     func.extract(period_fn, date_col).label("periodo"),
-                    func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("valore"),
+                    func.coalesce(func.sum(LineItem.totale_riga), 0).label("valore"),
                 )
-                .join(OrderLineItem, OrderLineItem.order_id == Order.id)
-                .filter(*date_filters(date_col), Order.contribuisce_fatturato == True, OrderLineItem.categoria != 'Trasporti')
+                .join(LineItem, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
+                .filter(*date_filters(date_col), Order.contribuisce_fatturato == True, LineItem.categoria != 'Trasporti')
             )
             if allowed is not None:
                 q = q.filter(Order.company_id.in_(allowed))
@@ -196,12 +195,12 @@ def dashboard_kpi(
     agente_ids = _agente_subq(agente, db)
 
     fat_q = (
-        db.query(func.coalesce(func.sum(OrderLineItem.totale_riga), 0))
-        .join(Order, OrderLineItem.order_id == Order.id)
+        db.query(func.coalesce(func.sum(LineItem.totale_riga), 0))
+        .join(Order, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
         .filter(
             Order.data_ordine >= dal, Order.data_ordine <= al,
             Order.contribuisce_fatturato == True,
-            OrderLineItem.categoria != 'Trasporti',
+            LineItem.categoria != 'Trasporti',
         )
     )
     if allowed is not None:
@@ -291,11 +290,11 @@ def dashboard_per_famiglia(
     base_ord = [
         Order.data_ordine >= dal, Order.data_ordine <= al,
         Order.contribuisce_fatturato == True,
-        OrderLineItem.categoria.isnot(None), OrderLineItem.categoria != "",
-        OrderLineItem.categoria != "Trasporti",
+        LineItem.categoria.isnot(None), LineItem.categoria != "",
+        LineItem.categoria != "Trasporti",
     ]
     base_opp = [Opportunity.data_creazione_sap >= dal, Opportunity.data_creazione_sap <= al,
-                OfferLineItem.categoria.isnot(None), OfferLineItem.categoria != ""]
+                LineItem.categoria.isnot(None), LineItem.categoria != ""]
     if allowed is not None:
         base_ord.append(Order.company_id.in_(allowed))
         base_opp.append(Opportunity.company_id.in_(allowed))
@@ -311,51 +310,51 @@ def dashboard_per_famiglia(
 
     fam_rows = (
         db.query(
-            OrderLineItem.categoria.label("famiglia"),
-            func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
+            LineItem.categoria.label("famiglia"),
+            func.coalesce(func.sum(LineItem.totale_riga), 0).label("fatturato"),
             func.count(func.distinct(Order.id)).label("ordini"),
         )
-        .join(Order, OrderLineItem.order_id == Order.id)
+        .join(Order, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
         .filter(*base_ord)
-        .group_by(OrderLineItem.categoria)
-        .order_by(func.sum(OrderLineItem.totale_riga).desc())
+        .group_by(LineItem.categoria)
+        .order_by(func.sum(LineItem.totale_riga).desc())
         .all()
     )
 
     cat_rows = (
         db.query(
-            OrderLineItem.categoria.label("famiglia"),
-            OrderLineItem.prodotto.label("prodotto"),
-            func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
+            LineItem.categoria.label("famiglia"),
+            LineItem.prodotto.label("prodotto"),
+            func.coalesce(func.sum(LineItem.totale_riga), 0).label("fatturato"),
             func.count(func.distinct(Order.id)).label("ordini"),
         )
-        .join(Order, OrderLineItem.order_id == Order.id)
-        .filter(*base_ord, OrderLineItem.prodotto.isnot(None), OrderLineItem.prodotto != "")
-        .group_by(OrderLineItem.categoria, OrderLineItem.prodotto)
-        .order_by(OrderLineItem.categoria, func.sum(OrderLineItem.totale_riga).desc())
+        .join(Order, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
+        .filter(*base_ord, LineItem.prodotto.isnot(None), LineItem.prodotto != "")
+        .group_by(LineItem.categoria, LineItem.prodotto)
+        .order_by(LineItem.categoria, func.sum(LineItem.totale_riga).desc())
         .all()
     )
 
     fam_opp_rows = (
         db.query(
-            OfferLineItem.categoria.label("famiglia"),
+            LineItem.categoria.label("famiglia"),
             func.count(func.distinct(Opportunity.id)).label("offerte"),
         )
-        .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
+        .join(Opportunity, (LineItem.opportunity_id == Opportunity.id) & (LineItem.document_type == 'offer'))
         .filter(*base_opp)
-        .group_by(OfferLineItem.categoria)
+        .group_by(LineItem.categoria)
         .all()
     )
 
     cat_opp_rows = (
         db.query(
-            OfferLineItem.categoria.label("famiglia"),
-            OfferLineItem.prodotto.label("prodotto"),
+            LineItem.categoria.label("famiglia"),
+            LineItem.prodotto.label("prodotto"),
             func.count(func.distinct(Opportunity.id)).label("offerte"),
         )
-        .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
-        .filter(*base_opp, OfferLineItem.prodotto.isnot(None), OfferLineItem.prodotto != "")
-        .group_by(OfferLineItem.categoria, OfferLineItem.prodotto)
+        .join(Opportunity, (LineItem.opportunity_id == Opportunity.id) & (LineItem.document_type == 'offer'))
+        .filter(*base_opp, LineItem.prodotto.isnot(None), LineItem.prodotto != "")
+        .group_by(LineItem.categoria, LineItem.prodotto)
         .all()
     )
 
@@ -367,10 +366,11 @@ def dashboard_per_famiglia(
 
     # Tutte le famiglie note (senza filtri data/agente/org) per mostrare anche quelle a 0
     all_famiglie = [
-        r[0] for r in db.query(OrderLineItem.categoria).filter(
-            OrderLineItem.categoria.isnot(None),
-            OrderLineItem.categoria != "",
-            OrderLineItem.categoria != "Trasporti",
+        r[0] for r in db.query(LineItem.categoria).filter(
+            LineItem.document_type == 'order',
+            LineItem.categoria.isnot(None),
+            LineItem.categoria != "",
+            LineItem.categoria != "Trasporti",
         ).distinct().all()
     ]
 
@@ -378,7 +378,7 @@ def dashboard_per_famiglia(
     totale = sum(float(r.fatturato) for r in fam_rows)
 
     # Trasporti: query separata, stessi filtri di accesso ma categoria == 'Trasporti'
-    trasp_base = [Order.data_ordine >= dal, Order.data_ordine <= al, Order.contribuisce_fatturato == True, OrderLineItem.categoria == 'Trasporti']
+    trasp_base = [Order.data_ordine >= dal, Order.data_ordine <= al, Order.contribuisce_fatturato == True, LineItem.categoria == 'Trasporti']
     if allowed is not None:
         trasp_base.append(Order.company_id.in_(allowed))
     if agente_ids is not None:
@@ -390,10 +390,10 @@ def dashboard_per_famiglia(
 
     trasp_row = (
         db.query(
-            func.coalesce(func.sum(OrderLineItem.totale_riga), 0).label("fatturato"),
+            func.coalesce(func.sum(LineItem.totale_riga), 0).label("fatturato"),
             func.count(func.distinct(Order.id)).label("ordini"),
         )
-        .join(Order, OrderLineItem.order_id == Order.id)
+        .join(Order, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
         .filter(*trasp_base)
         .one()
     )

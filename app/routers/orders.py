@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, select, exists, nullslast, case
 from app.database import get_db
 from app.models.order import Order
-from app.models.order_line_item import OrderLineItem
+from app.models.line_item import LineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user, allowed_doc_cond
@@ -50,15 +50,16 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=N
     if valore_max is not None:
         q = q.filter(Order.valore_totale <= valore_max)
     if categoria or prodotto:
-        sub = select(OrderLineItem.order_id).where(
-            OrderLineItem.order_id == Order.id,
+        sub = select(LineItem.order_id).where(
+            LineItem.order_id == Order.id,
+            LineItem.document_type == 'order',
         ).correlate(Order)
         if not categoria:
-            sub = sub.where(OrderLineItem.totale_riga > 0)
+            sub = sub.where(LineItem.totale_riga > 0)
         if categoria:
-            sub = sub.where(OrderLineItem.categoria == categoria)
+            sub = sub.where(LineItem.categoria == categoria)
         if prodotto:
-            sub = sub.where(OrderLineItem.prodotto == prodotto)
+            sub = sub.where(LineItem.prodotto == prodotto)
         q = q.filter(exists(sub))
     if tipo_doc and tipo_doc in TIPO_DOC_GROUPS:
         q = q.filter(Order.tipo_doc.in_(TIPO_DOC_GROUPS[tipo_doc]))
@@ -101,17 +102,17 @@ def stats_ordini(
     if kpi_al:
         q_ytd = q_ytd.filter(Order.data_ordine <= kpi_al)
 
-    q_joined = q_ytd.join(OrderLineItem, OrderLineItem.order_id == Order.id)
+    q_joined = q_ytd.join(LineItem, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
     if categoria:
-        q_joined = q_joined.filter(OrderLineItem.categoria == categoria)
+        q_joined = q_joined.filter(LineItem.categoria == categoria)
     if prodotto:
-        q_joined = q_joined.filter(OrderLineItem.prodotto == prodotto)
+        q_joined = q_joined.filter(LineItem.prodotto == prodotto)
     if categoria == 'Trasporti':
         valore_expr = func.coalesce(func.sum(case(
-            (Order.contribuisce_fatturato == True, OrderLineItem.totale_riga), else_=0
+            (Order.contribuisce_fatturato == True, LineItem.totale_riga), else_=0
         )), 0)
     else:
-        valore_expr = func.coalesce(func.sum(case(((Order.contribuisce_fatturato == True) & (OrderLineItem.categoria != 'Trasporti'), OrderLineItem.totale_riga), else_=0)), 0)
+        valore_expr = func.coalesce(func.sum(case(((Order.contribuisce_fatturato == True) & (LineItem.categoria != 'Trasporti'), LineItem.totale_riga), else_=0)), 0)
     totale_ytd, valore_totale, da_offerte = (
         q_joined.with_entities(
             func.count(func.distinct(Order.id)),
@@ -214,7 +215,7 @@ def lista_ordini(
 
 @router.get("/{order_id}/line_items")
 def get_order_line_items(order_id: str, db: Session = Depends(get_db)):
-    items = db.query(OrderLineItem).filter(OrderLineItem.order_id == order_id).all()
+    items = db.query(LineItem).filter(LineItem.order_id == order_id, LineItem.document_type == 'order').all()
     return [
         {
             "id": str(i.id),

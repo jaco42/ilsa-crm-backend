@@ -6,8 +6,7 @@ from app.database import get_db
 from app.models.company import Company
 from app.models.opportunity import Opportunity
 from app.models.order import Order
-from app.models.order_line_item import OrderLineItem
-from app.models.offer_line_item import OfferLineItem
+from app.models.line_item import LineItem
 from app.auth import get_current_user, company_agente_filter
 from app.services.opportunity_stats import build_scaduta_attiva
 from app.config import settings
@@ -25,8 +24,7 @@ def _status_dinamico(c: Company) -> str:
 
 
 def _auto_assign_agenti_bulk(db: Session) -> dict:
-    """Assegna agente_ilsa/agente_desco alle aziende visibili che ne sono prive.
-    Non tocca aziende con agente_sap_locked=True (che hanno già agenti da SAP/ZN)."""
+    """Assegna agente_ilsa/agente_desco alle aziende visibili che ne sono prive."""
     ranked_ilsa = (
         db.query(
             Company.paese,
@@ -191,24 +189,24 @@ def lista_aziende(
     _OppCompany = aliased(Company)
     _effective_opp_company = func.coalesce(_OppCompany.merged_into, _OppCompany.id)
     _opp_val_cond = Opportunity.contribuisce_fatturato == True
-    _opp_no_trasp = OfferLineItem.categoria != 'Trasporti'
+    _opp_no_trasp = LineItem.categoria != 'Trasporti'
     opp_q = (
         db.query(
             _effective_opp_company.label("effective_company_id"),
             func.count(func.distinct(case((attiva_cond, Opportunity.id)))).label("offerte_attive"),
             func.coalesce(func.sum(case((
-                attiva_cond & _opp_val_cond & _opp_no_trasp, OfferLineItem.totale_riga
+                attiva_cond & _opp_val_cond & _opp_no_trasp, LineItem.totale_riga
             ), else_=0)), 0).label("valore_offerte_attive"),
             func.count(func.distinct(case((scaduta_cond, Opportunity.id)))).label("offerte_scadute"),
             func.coalesce(func.sum(case((
-                scaduta_cond & _opp_val_cond & _opp_no_trasp, OfferLineItem.totale_riga
+                scaduta_cond & _opp_val_cond & _opp_no_trasp, LineItem.totale_riga
             ), else_=0)), 0).label("valore_offerte_scadute"),
             func.count(func.distinct(case((Opportunity.stage == "Chiuso Vinto", Opportunity.id)))).label("offerte_vinte"),
             func.count(func.distinct(case((Opportunity.stage == "Chiuso Perso", Opportunity.id)))).label("offerte_perse"),
             func.max(Opportunity.data_creazione_sap).label("last_opp_date"),
         )
         .join(_OppCompany, _OppCompany.id == Opportunity.company_id)
-        .outerjoin(OfferLineItem, OfferLineItem.opportunity_id == Opportunity.id)
+        .outerjoin(LineItem, (LineItem.opportunity_id == Opportunity.id) & (LineItem.document_type == 'offer'))
     )
     if date_from:
         opp_q = opp_q.filter(Opportunity.data_creazione_sap >= date_from)
@@ -223,12 +221,12 @@ def lista_aziende(
             _effective_ord_company.label("effective_company_id"),
             func.count(func.distinct(Order.id)).label("ordini_totali"),
             func.coalesce(func.sum(case(
-                ((Order.contribuisce_fatturato == True) & (OrderLineItem.categoria != 'Trasporti'),
-                 OrderLineItem.totale_riga), else_=0
+                ((Order.contribuisce_fatturato == True) & (LineItem.categoria != 'Trasporti'),
+                 LineItem.totale_riga), else_=0
             )), 0).label("valore_ordini"),
             func.max(Order.data_creazione_sap).label("last_order_date"),
         )
-        .join(OrderLineItem, OrderLineItem.order_id == Order.id)
+        .join(LineItem, (LineItem.order_id == Order.id) & (LineItem.document_type == 'order'))
         .join(_OrdCompany, _OrdCompany.id == Order.company_id)
     )
     if date_from:
@@ -566,7 +564,8 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
         "status": company.status,
         "agente_ilsa": company.agente_ilsa,
         "agente_desco": company.agente_desco,
-        "agente_sap_locked": company.agente_sap_locked,
+        "agente_ilsa_locked": company.agente_ilsa_locked,
+        "agente_desco_locked": company.agente_desco_locked,
         "sap_customer_id": company.sap_customer_id,
         "sap_customer_ids": sap_customer_ids,
         "sap_created_at": company.sap_created_at.isoformat() if company.sap_created_at else None,
@@ -583,7 +582,7 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
 @router.post("/merge")
 def merge_aziende(data: dict, db: Session = Depends(get_db)):
     """data: { survivor_id, duplicate_ids: [id, ...] }"""
-    from app.services.dedup import merge_companies, _rank
+    from app.services.merge import merge_companies, _rank
     survivor = db.query(Company).filter(Company.id == data["survivor_id"]).first()
     if not survivor:
         raise HTTPException(status_code=404, detail="Azienda survivor non trovata")
@@ -692,8 +691,10 @@ def aggiorna_azienda(company_id: str, data: dict, db: Session = Depends(get_db))
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Azienda non trovata")
-    if company.agente_sap_locked and ('agente_ilsa' in data or 'agente_desco' in data):
-        raise HTTPException(status_code=403, detail="Agente assegnato da SAP: non modificabile manualmente")
+    if 'agente_ilsa' in data and company.agente_ilsa_locked:
+        raise HTTPException(status_code=403, detail="Agente ILSA assegnato da SAP: non modificabile manualmente")
+    if 'agente_desco' in data and company.agente_desco_locked:
+        raise HTTPException(status_code=403, detail="Agente DESCO assegnato da SAP: non modificabile manualmente")
     for key, value in data.items():
         setattr(company, key, value)
     db.commit()

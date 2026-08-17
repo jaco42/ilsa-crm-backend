@@ -6,7 +6,6 @@ from app.database import Base
 
 
 STAGE_VALIDI = [
-    "Richiesta Info",
     "Offerta Mandata",
     "Chiuso Vinto",
     "Drop pre-offerta",
@@ -21,9 +20,7 @@ class Opportunity(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False)
     contact_id = Column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True)
-    rep_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    agente_id = Column(UUID(as_uuid=True), ForeignKey("agenti.id"), nullable=True)
-    stage = Column(String, nullable=False, default="Richiesta Info")
+    stage = Column(String, nullable=False, default="Offerta Mandata")
     canale_acquisizione = Column(String, nullable=True)
     sap_document_id = Column(String, nullable=True, unique=True)
     org_cm = Column(String, nullable=True)
@@ -35,7 +32,6 @@ class Opportunity(Base):
     data_scadenza = Column(Date, nullable=True)
     data_creazione_sap = Column(Date, nullable=True)
     sap_creato_da = Column(String, nullable=True)
-    dropout_reason = Column(String, nullable=True)
     loss_reason = Column(String, nullable=True)
     stage_changed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -43,6 +39,4 @@ class Opportunity(Base):
 
     company = relationship("Company", backref="opportunities")
     contact = relationship("Contact", backref="opportunities")
-    rep = relationship("User", backref="opportunities")
-    agente = relationship("Agente", backref="opportunities")
-    line_items = relationship("OfferLineItem", backref="opportunity")
+    line_items = relationship("LineItem", back_populates="opportunity", foreign_keys="LineItem.opportunity_id")

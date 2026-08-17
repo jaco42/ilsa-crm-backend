@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, case, select, exists, nullslast
 from app.database import get_db
 from app.models.opportunity import Opportunity
-from app.models.offer_line_item import OfferLineItem
+from app.models.line_item import LineItem
 from app.models.order import Order
 from app.models.company import Company
 from app.auth import get_current_user, allowed_doc_cond
@@ -48,14 +48,15 @@ def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_
     if creazione_al:
         q = q.filter(Opportunity.data_creazione_sap <= creazione_al)
     if categoria or prodotto:
-        sub = select(OfferLineItem.opportunity_id).where(
-            OfferLineItem.opportunity_id == Opportunity.id,
-            OfferLineItem.totale_riga > 0,
+        sub = select(LineItem.opportunity_id).where(
+            LineItem.opportunity_id == Opportunity.id,
+            LineItem.document_type == 'offer',
+            LineItem.totale_riga > 0,
         )
         if categoria:
-            sub = sub.where(OfferLineItem.categoria == categoria)
+            sub = sub.where(LineItem.categoria == categoria)
         if prodotto:
-            sub = sub.where(OfferLineItem.prodotto == prodotto)
+            sub = sub.where(LineItem.prodotto == prodotto)
         q = q.filter(exists(sub))
     return q
 
@@ -129,9 +130,9 @@ def stats_opportunity(
         # Con filtro prodotto i valori si calcolano sulle righe offerta, non sull'intera offerta
         li_conds = []
         if categoria:
-            li_conds.append(OfferLineItem.categoria == categoria)
+            li_conds.append(LineItem.categoria == categoria)
         if prodotto:
-            li_conds.append(OfferLineItem.prodotto == prodotto)
+            li_conds.append(LineItem.prodotto == prodotto)
 
         base_opp_conds = []
         if company_id:
@@ -169,9 +170,9 @@ def stats_opportunity(
 
         def li_sum(stage_cond, opp_conds):
             return float(
-                db.query(func.coalesce(func.sum(OfferLineItem.totale_riga), 0))
-                .join(Opportunity, OfferLineItem.opportunity_id == Opportunity.id)
-                .filter(stage_cond, *li_conds, *opp_conds)
+                db.query(func.coalesce(func.sum(LineItem.totale_riga), 0))
+                .join(Opportunity, LineItem.opportunity_id == Opportunity.id)
+                .filter(LineItem.document_type == 'offer', stage_cond, *li_conds, *opp_conds)
                 .scalar() or 0
             )
 
@@ -331,7 +332,7 @@ def aggiorna_opportunity(opportunity_id: str, data: dict, db: Session = Depends(
 
 @router.get("/{opportunity_id}/line_items")
 def get_line_items(opportunity_id: str, db: Session = Depends(get_db)):
-    items = db.query(OfferLineItem).filter(OfferLineItem.opportunity_id == opportunity_id).all()
+    items = db.query(LineItem).filter(LineItem.opportunity_id == opportunity_id, LineItem.document_type == 'offer').all()
     return [
         {
             "id": str(i.id),

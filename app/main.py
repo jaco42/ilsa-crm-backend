@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO)
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, dedup, auth, imports, import_log, feedback, dashboard
+from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, auth, imports, import_log, feedback, dashboard
 from app.database import SessionLocal
 from app.config import settings
 
@@ -59,7 +59,6 @@ app.include_router(orders.router)
 app.include_router(reminders.router)
 app.include_router(reminders.internal_router)
 app.include_router(radar.router)
-app.include_router(dedup.router)
 app.include_router(imports.router)
 app.include_router(import_log.router)
 app.include_router(feedback.router)
