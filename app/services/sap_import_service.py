@@ -359,7 +359,6 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from sqlalchemy import func as _func, case as _case
 
-    total = len(clienti)
     skipped = 0
 
     # Pre-carica esistenti e secondari in 2 query
@@ -372,7 +371,7 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
         if sec.company:
             secondaries[sec.sap_customer_id] = sec.company
 
-    yield {"inserted": 0, "already_present": 0, "identical": 0, "skipped": 0, "processed": 0, "total": total}
+    yield {"inserted": 0, "already_present": 0, "identical": 0, "skipped": 0, "processed": 0, "total": 0}
 
     # Fase 1: parsing righe in Python
     all_rows = []
@@ -419,12 +418,13 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
 
     inserted_count = sum(1 for r in all_rows if r["sap_customer_id"] not in existing_sap_ids)
     already_present_count = len(all_rows) - inserted_count
+    _valid_total = len(all_rows)
     yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0,
-           "skipped": skipped, "processed": len(all_rows), "total": total}
+           "skipped": skipped, "processed": 0, "total": _valid_total}
 
     # Fase 2: bulk upsert — CASE preserva telefono_override e non degrada status
     _CHUNK = 2000
-    for ci in range(0, len(all_rows), _CHUNK):
+    for ci in range(0, _valid_total, _CHUNK):
         chunk = all_rows[ci:ci + _CHUNK]
         stmt = pg_insert(Company).values(chunk)
         stmt = stmt.on_conflict_do_update(
@@ -456,7 +456,7 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
         db.execute(stmt)
         db.commit()
         yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0,
-               "skipped": skipped, "processed": ci + len(chunk), "total": total}
+               "skipped": skipped, "processed": ci + len(chunk), "total": _valid_total}
 
     # Fase 3: secondary SAP IDs — aggiorna campi vuoti sul survivor
     sec_updated = 0
