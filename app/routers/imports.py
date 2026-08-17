@@ -495,6 +495,7 @@ async def run_companies(
         else:
             if not dry_run:
                 company = Company(
+                    id=uuid.uuid4(),
                     ragione_sociale=ragione_sociale,
                     partita_iva=partita_iva,
                     indirizzo=indirizzo,
@@ -658,6 +659,7 @@ async def stream_companies(
                                 updated.append({"riga": line, "attuale": fields_attuale, "nuovo": fields_nuovo})
                         else:
                             company = Company(
+                                id=uuid.uuid4(),
                                 ragione_sociale=ragione_sociale, partita_iva=partita_iva,
                                 indirizzo=indirizzo, citta=citta, cap=cap, provincia=provincia,
                                 paese=paese, telefono=telefono, email=email,
@@ -717,7 +719,7 @@ def _append_storico(existing: str | None, nuovo: str) -> str:
 
 
 def _collect_notes(db, note_entries_cfg, row, contact_id, company, created_by, note_objects: list):
-    if not note_entries_cfg or not company:
+    if not note_entries_cfg or not company or not company.id:
         return
     for entry in note_entries_cfg:
         text = _get_val(row, entry)
