@@ -620,11 +620,12 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
     log.info(f"[T] reload ids: {_time.monotonic()-t0:.2f}s")
 
     processed_doc_ids = [r["sap_document_id"] for r in all_rows]
+    n_docs = len(processed_doc_ids)
 
-    # Fase 4: line items in chunk da 300
+    # Fase 4: line items — bulk INSERT dicts, no ORM tracking
     _CHUNK = 300
     total_li = 0
-    for ci in range(0, len(processed_doc_ids), _CHUNK):
+    for ci in range(0, n_docs, _CHUNK):
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
         chunk_opp_ids = [existing_opps[d] for d in chunk_doc_ids if d in existing_opps]
         if chunk_opp_ids:
@@ -639,25 +640,26 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
                 continue
             for (codice, definizione, qty, um, prz, val, gerarchia, rf) in posizioni_by_doc.get(doc_id, []):
                 l1, l2 = _gerarchia_to_famiglia(gerarchia)
-                chunk_li.append(LineItem(
-                    document_type='offer',
-                    opportunity_id=opp_id,
-                    codice_sap=codice or None,
-                    descrizione_riga=definizione or None,
-                    quantita=parse_decimal(qty),
-                    unita_misura=um or None,
-                    prezzo_unitario=parse_decimal(prz),
-                    totale_riga=parse_decimal(val),
-                    categoria=l1,
-                    prodotto=l2,
-                    nota=_nota_riga(rf),
-                ))
+                chunk_li.append({
+                    "id": _uuid.uuid4(),
+                    "document_type": "offer",
+                    "opportunity_id": opp_id,
+                    "codice_sap": codice or None,
+                    "descrizione_riga": definizione or None,
+                    "quantita": parse_decimal(qty),
+                    "unita_misura": um or None,
+                    "prezzo_unitario": parse_decimal(prz),
+                    "totale_riga": parse_decimal(val),
+                    "categoria": l1,
+                    "prodotto": l2,
+                    "nota": _nota_riga(rf),
+                })
         if chunk_li:
-            db.add_all(chunk_li)
+            db.execute(pg_insert(LineItem).values(chunk_li))
         db.commit()
         total_li += len(chunk_li)
-        yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
-               "processed": total, "total": total}
+        yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0, "skipped": skipped,
+               "processed": ci + len(chunk_doc_ids), "total": n_docs}
 
     log.info(f"Offerte:    {upserted} upsertate  |  {skipped} saltate  |  {total_li} righe")
 
@@ -793,11 +795,12 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
     }
     processed_doc_ids = [r["sap_document_id"] for r in all_rows]
     tipo_doc_by_sap_id = {r["sap_document_id"]: r.get("tipo_doc") for r in all_rows}
+    n_docs = len(processed_doc_ids)
 
-    # Fase 4: line items in chunk da 300
+    # Fase 4: line items — bulk INSERT dicts, no ORM tracking
     _CHUNK = 300
     total_li = 0
-    for ci in range(0, len(processed_doc_ids), _CHUNK):
+    for ci in range(0, n_docs, _CHUNK):
         chunk_doc_ids = processed_doc_ids[ci:ci + _CHUNK]
         chunk_order_ids = [existing_orders[d] for d in chunk_doc_ids if d in existing_orders]
         if chunk_order_ids:
@@ -823,25 +826,26 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
                     l1, l2 = "Riparazioni", "Riparazioni"
                 else:
                     l1, l2 = _gerarchia_to_famiglia(gerarchia)
-                chunk_li.append(LineItem(
-                    document_type='order',
-                    order_id=order_id,
-                    codice_sap=codice or None,
-                    descrizione_riga=definizione or None,
-                    quantita=parse_decimal(qty),
-                    unita_misura=um or None,
-                    prezzo_unitario=parse_decimal(prz),
-                    totale_riga=parse_decimal(val),
-                    categoria=l1,
-                    prodotto=l2,
-                    nota=_nota_riga(rf) or _NOTA_DA_TIPO.get(tipo_doc),
-                ))
+                chunk_li.append({
+                    "id": _uuid.uuid4(),
+                    "document_type": "order",
+                    "order_id": order_id,
+                    "codice_sap": codice or None,
+                    "descrizione_riga": definizione or None,
+                    "quantita": parse_decimal(qty),
+                    "unita_misura": um or None,
+                    "prezzo_unitario": parse_decimal(prz),
+                    "totale_riga": parse_decimal(val),
+                    "categoria": l1,
+                    "prodotto": l2,
+                    "nota": _nota_riga(rf) or _NOTA_DA_TIPO.get(tipo_doc),
+                })
         if chunk_li:
-            db.add_all(chunk_li)
+            db.execute(pg_insert(LineItem).values(chunk_li))
         db.commit()
         total_li += len(chunk_li)
-        yield {"inserted": 0, "updated": upserted, "identical": 0, "skipped": skipped,
-               "processed": total, "total": total}
+        yield {"inserted": ord_inserted_count, "already_present": ord_already_present_count, "identical": 0, "skipped": skipped,
+               "processed": ci + len(chunk_doc_ids), "total": n_docs}
 
     log.info(f"Ordini:     {upserted} upsertati  |  {skipped} saltati  |  {total_li} righe")
 
