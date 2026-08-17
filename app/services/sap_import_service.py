@@ -235,7 +235,7 @@ def _gerarchia_to_famiglia(g: str):
 
 def get(row, *names: str) -> str:
     for name in names:
-        if name not in row.index:
+        if name not in row:
             continue
         val = row[name]
         if isinstance(val, pd.Series):
