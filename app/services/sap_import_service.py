@@ -355,102 +355,124 @@ def _build_posizioni_index(posizioni: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 
 def import_companies_stream(clienti: pd.DataFrame, db: Session):
-    inserted = updated = identical = skipped = 0
-    total = len(clienti)
+    import uuid as _uuid
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy import func as _func, case as _case
 
-    # Pre-carica tutti i record esistenti in 2 query invece di N
-    existing = {
-        c.sap_customer_id: c
-        for c in db.query(Company).filter(Company.sap_customer_id.isnot(None)).all()
-    }
+    total = len(clienti)
+    skipped = 0
+
+    # Pre-carica esistenti e secondari in 2 query
+    existing_sap_ids = set(
+        r[0] for r in db.query(Company.sap_customer_id)
+        .filter(Company.sap_customer_id.isnot(None)).all()
+    )
     secondaries = {}
     for sec in db.query(CompanySapId).all():
         if sec.company:
             secondaries[sec.sap_customer_id] = sec.company
 
-    for i, (_, row) in enumerate(clienti.iterrows()):
-        codice_cliente = get(row, "Cliente")
+    yield {"inserted": 0, "already_present": 0, "identical": 0, "skipped": 0, "processed": 0, "total": total}
+
+    # Fase 1: parsing righe in Python
+    all_rows = []
+    secondary_rows = []
+    _records = clienti.to_dict('records')
+    for row in _records:
+        codice_cliente = (row.get("Cliente") or "").strip()
         if not codice_cliente:
             skipped += 1
+            continue
+        tipo = classify_customer_code(codice_cliente)
+        if tipo in ("dest_merci", "skip"):
+            skipped += 1
+            continue
+
+        nome1 = (row.get("Nome 1") or "").strip()
+        nome2 = (row.get("Nome 2") or "").strip()
+        ragione_sociale = f"{nome1} {nome2}".strip() if nome2 else nome1
+        if not ragione_sociale:
+            ragione_sociale = f"Cliente SAP {codice_cliente}"
+
+        piva = get(row, "Partita IVA 1", "Part.IVA", "Partita IVA") or None
+        entry = {
+            "id": _uuid.uuid4(),
+            "sap_customer_id": codice_cliente,
+            "ragione_sociale": ragione_sociale,
+            "indirizzo": get(row, "Via") or None,
+            "citta": get(row, "Località", "Localit?") or None,
+            "cap": get(row, "CAP") or None,
+            "provincia": get(row, "Rg") or None,
+            "paese": get(row, "Pse") or None,
+            "telefono": get(row, "Telefono 1") or None,
+            "partita_iva": piva,
+            "sap_created_at": parse_date(get(row, "Data ap.")),
+            "status": CompanyStatus.cliente if tipo == "cliente" else CompanyStatus.prospect,
+            "origin": CompanyOrigin.sap_sync,
+            "created_by": "SAP",
+        }
+
+        if codice_cliente not in existing_sap_ids and codice_cliente in secondaries:
+            secondary_rows.append((secondaries[codice_cliente], entry))
         else:
-            tipo = classify_customer_code(codice_cliente)
-            if tipo in ("dest_merci", "skip"):
-                skipped += 1
-            else:
-                nome1 = get(row, "Nome 1")
-                nome2 = get(row, "Nome 2")
-                ragione_sociale = f"{nome1} {nome2}".strip() if nome2 else nome1
-                if not ragione_sociale:
-                    ragione_sociale = f"Cliente SAP {codice_cliente}"
+            all_rows.append(entry)
 
-                piva = get(row, "Partita IVA 1", "Part.IVA", "Partita IVA") or None
-                data = {
-                    "sap_customer_id": codice_cliente,
-                    "ragione_sociale": ragione_sociale,
-                    "indirizzo": get(row, "Via") or None,
-                    "citta": get(row, "Località", "Localit?") or None,
-                    "cap": get(row, "CAP") or None,
-                    "provincia": get(row, "Rg") or None,
-                    "paese": get(row, "Pse") or None,
-                    "telefono": get(row, "Telefono 1") or None,
-                    "partita_iva": piva,
-                    "sap_created_at": parse_date(get(row, "Data ap.")),
-                    "status": CompanyStatus.cliente if tipo == "cliente" else CompanyStatus.prospect,
-                    "origin": CompanyOrigin.sap_sync,
-                    "created_by": "SAP",
-                }
+    inserted_count = sum(1 for r in all_rows if r["sap_customer_id"] not in existing_sap_ids)
+    already_present_count = len(all_rows) - inserted_count
+    yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0,
+           "skipped": skipped, "processed": len(all_rows), "total": total}
 
-                company = existing.get(codice_cliente)
-                row_handled = False
+    # Fase 2: bulk upsert — CASE preserva telefono_override e non degrada status
+    _CHUNK = 2000
+    for ci in range(0, len(all_rows), _CHUNK):
+        chunk = all_rows[ci:ci + _CHUNK]
+        stmt = pg_insert(Company).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["sap_customer_id"],
+            set_={
+                "ragione_sociale":  stmt.excluded.ragione_sociale,
+                "indirizzo":        stmt.excluded.indirizzo,
+                "citta":            stmt.excluded.citta,
+                "cap":              stmt.excluded.cap,
+                "provincia":        stmt.excluded.provincia,
+                "paese":            stmt.excluded.paese,
+                "partita_iva":      stmt.excluded.partita_iva,
+                "sap_created_at":   stmt.excluded.sap_created_at,
+                "origin":           stmt.excluded.origin,
+                "telefono": _case(
+                    (Company.__table__.c.telefono_override == True,
+                     Company.__table__.c.telefono),
+                    else_=stmt.excluded.telefono,
+                ),
+                "status": _case(
+                    ((Company.__table__.c.status == 'cliente') &
+                     (stmt.excluded.status == 'prospect'),
+                     Company.__table__.c.status),
+                    else_=stmt.excluded.status,
+                ),
+                "updated_at": _func.now(),
+            }
+        )
+        db.execute(stmt)
+        db.commit()
+        yield {"inserted": inserted_count, "already_present": already_present_count, "identical": 0,
+               "skipped": skipped, "processed": ci + len(chunk), "total": total}
 
-                if not company:
-                    survivor = secondaries.get(codice_cliente)
-                    if survivor:
-                        fill_fields = ["partita_iva", "indirizzo", "citta", "cap", "provincia", "paese", "tipo_attivita", "sap_created_at"]
-                        if not survivor.telefono_override:
-                            fill_fields.append("telefono")
-                        if not survivor.email_override:
-                            fill_fields.append("email")
-                        changed_fields = [f for f in fill_fields if not getattr(survivor, f) and data.get(f)]
-                        for f in changed_fields:
-                            setattr(survivor, f, data[f])
-                        updated += 1 if changed_fields else 0
-                        identical += 0 if changed_fields else 1
-                        row_handled = True
+    # Fase 3: secondary SAP IDs — aggiorna campi vuoti sul survivor
+    sec_updated = 0
+    for survivor, data in secondary_rows:
+        fill_fields = ["partita_iva", "indirizzo", "citta", "cap", "provincia", "paese", "sap_created_at"]
+        if not survivor.telefono_override:
+            fill_fields.append("telefono")
+        changed_fields = [f for f in fill_fields if not getattr(survivor, f) and data.get(f)]
+        for f in changed_fields:
+            setattr(survivor, f, data[f])
+        if changed_fields:
+            sec_updated += 1
+    if secondary_rows:
+        db.commit()
 
-                if not row_handled:
-                    if company:
-                        if company.telefono_override:
-                            data.pop("telefono", None)
-                        if company.status == CompanyStatus.cliente and data.get("status") == CompanyStatus.prospect:
-                            data.pop("status", None)
-                        any_changed = any(
-                            _changed(company, k, v)
-                            for k, v in data.items() if v is not None and hasattr(company, k)
-                        )
-                        if any_changed:
-                            for k, v in data.items():
-                                setattr(company, k, v)
-                            updated += 1
-                        else:
-                            identical += 1
-                    else:
-                        handled, match = find_and_handle_duplicate(data, db)
-                        if handled:
-                            updated += 1
-                        else:
-                            new_company = Company(**data)
-                            db.add(new_company)
-                            db.flush()
-                            existing[codice_cliente] = new_company
-                            inserted += 1
-
-        if (i + 1) % 200 == 0 or i == total - 1:
-            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": skipped,
-                   "processed": i + 1, "total": total}
-
-    db.commit()
-    log.info(f"Companies:  {inserted} inserite  |  {updated} aggiornate  |  {identical} identiche  |  {skipped} saltate")
+    log.info(f"Companies:  {inserted_count} inserite  |  {already_present_count} già presenti  |  {skipped} saltate  |  {sec_updated} secondary aggiornate")
 
 
 def import_companies(clienti: pd.DataFrame, db: Session) -> dict:
