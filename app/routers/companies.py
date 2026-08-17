@@ -25,6 +25,9 @@ def _status_dinamico(c: Company) -> str:
 
 def _auto_assign_agenti_bulk(db: Session) -> dict:
     """Assegna agente_ilsa/agente_desco alle aziende visibili che ne sono prive."""
+    from collections import defaultdict
+    from sqlalchemy import or_
+
     ranked_ilsa = (
         db.query(
             Company.paese,
@@ -70,49 +73,53 @@ def _auto_assign_agenti_bulk(db: Session) -> dict:
     def _lookup(by_prov, by_paese, paese, provincia):
         return by_prov.get((paese, provincia)) or by_paese.get(paese)
 
-    # Precomputa quali aziende hanno documenti ILSA e quali DESCO
-    from sqlalchemy import or_
-    from app.models.opportunity import Opportunity
-    from app.models.order import Order as OrderModel
     has_ilsa = set(
         r[0] for r in db.query(Opportunity.company_id.distinct()).filter(Opportunity.org_cm == 'OC00').all()
     ) | set(
-        r[0] for r in db.query(OrderModel.company_id.distinct()).filter(OrderModel.org_cm == 'OC00').all()
+        r[0] for r in db.query(Order.company_id.distinct()).filter(Order.org_cm == 'OC00').all()
     )
     has_desco = set(
         r[0] for r in db.query(Opportunity.company_id.distinct()).filter(Opportunity.org_cm == 'OC02').all()
     ) | set(
-        r[0] for r in db.query(OrderModel.company_id.distinct()).filter(OrderModel.org_cm == 'OC02').all()
+        r[0] for r in db.query(Order.company_id.distinct()).filter(Order.org_cm == 'OC02').all()
     )
     has_any = has_ilsa | has_desco
 
-    unassigned = db.query(Company).filter(
+    # Carica solo le colonne necessarie — non ORM completo — per evitare commit da 10k UPDATE
+    unassigned_rows = db.query(
+        Company.id, Company.paese, Company.provincia, Company.agente_ilsa, Company.agente_desco
+    ).filter(
         Company.is_visible == True,
         or_(Company.agente_ilsa.is_(None), Company.agente_desco.is_(None)),
         Company.paese.isnot(None),
     ).all()
 
-    updated = 0
-    for c in unassigned:
-        changed = False
-        no_docs = c.id not in has_any
-        # Assegna agente_ilsa solo se ha documenti ILSA o non ha documenti
-        if c.agente_ilsa is None and (c.id in has_ilsa or no_docs):
-            ilsa = _lookup(ilsa_prov, ilsa_paese, c.paese, c.provincia)
+    to_set_ilsa: dict[str, list] = defaultdict(list)
+    to_set_desco: dict[str, list] = defaultdict(list)
+
+    for r in unassigned_rows:
+        no_docs = r.id not in has_any
+        if r.agente_ilsa is None and (r.id in has_ilsa or no_docs):
+            ilsa = _lookup(ilsa_prov, ilsa_paese, r.paese, r.provincia)
             if ilsa:
-                c.agente_ilsa = ilsa
-                changed = True
-        # Assegna agente_desco solo se ha documenti DESCO o non ha documenti
-        if c.agente_desco is None and (c.id in has_desco or no_docs):
-            desco = _lookup(desco_prov, desco_paese, c.paese, c.provincia)
+                to_set_ilsa[ilsa].append(r.id)
+        if r.agente_desco is None and (r.id in has_desco or no_docs):
+            desco = _lookup(desco_prov, desco_paese, r.paese, r.provincia)
             if desco:
-                c.agente_desco = desco
-                changed = True
-        if changed:
-            updated += 1
+                to_set_desco[desco].append(r.id)
+
+    updated = 0
+    for agente, ids in to_set_ilsa.items():
+        updated += db.query(Company).filter(Company.id.in_(ids)).update(
+            {"agente_ilsa": agente}, synchronize_session=False
+        )
+    for agente, ids in to_set_desco.items():
+        updated += db.query(Company).filter(Company.id.in_(ids)).update(
+            {"agente_desco": agente}, synchronize_session=False
+        )
 
     db.commit()
-    return {"totale_senza_agente": len(unassigned), "aggiornate": updated}
+    return {"totale_senza_agente": len(unassigned_rows), "aggiornate": updated}
 
 
 @router.post("/auto_assign_agenti")
