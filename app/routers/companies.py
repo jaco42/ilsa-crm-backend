@@ -7,6 +7,7 @@ from app.models.company import Company
 from app.models.opportunity import Opportunity
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
+from app.models.offer_line_item import OfferLineItem
 from app.auth import get_current_user, company_agente_filter
 from app.services.opportunity_stats import build_scaduta_attiva
 from app.config import settings
@@ -189,18 +190,25 @@ def lista_aziende(
     from sqlalchemy.orm import aliased
     _OppCompany = aliased(Company)
     _effective_opp_company = func.coalesce(_OppCompany.merged_into, _OppCompany.id)
+    _opp_val_cond = Opportunity.contribuisce_fatturato == True
+    _opp_no_trasp = OfferLineItem.categoria != 'Trasporti'
     opp_q = (
         db.query(
             _effective_opp_company.label("effective_company_id"),
-            func.count(case((attiva_cond, 1))).label("offerte_attive"),
-            func.coalesce(func.sum(case((attiva_cond, Opportunity.valore_totale))), 0).label("valore_offerte_attive"),
-            func.count(case((scaduta_cond, 1))).label("offerte_scadute"),
-            func.coalesce(func.sum(case((scaduta_cond, Opportunity.valore_totale))), 0).label("valore_offerte_scadute"),
-            func.count(case((Opportunity.stage == "Chiuso Vinto", 1))).label("offerte_vinte"),
-            func.count(case((Opportunity.stage == "Chiuso Perso", 1))).label("offerte_perse"),
+            func.count(func.distinct(case((attiva_cond, Opportunity.id)))).label("offerte_attive"),
+            func.coalesce(func.sum(case((
+                attiva_cond & _opp_val_cond & _opp_no_trasp, OfferLineItem.totale_riga
+            ), else_=0)), 0).label("valore_offerte_attive"),
+            func.count(func.distinct(case((scaduta_cond, Opportunity.id)))).label("offerte_scadute"),
+            func.coalesce(func.sum(case((
+                scaduta_cond & _opp_val_cond & _opp_no_trasp, OfferLineItem.totale_riga
+            ), else_=0)), 0).label("valore_offerte_scadute"),
+            func.count(func.distinct(case((Opportunity.stage == "Chiuso Vinto", Opportunity.id)))).label("offerte_vinte"),
+            func.count(func.distinct(case((Opportunity.stage == "Chiuso Perso", Opportunity.id)))).label("offerte_perse"),
             func.max(Opportunity.data_creazione_sap).label("last_opp_date"),
         )
         .join(_OppCompany, _OppCompany.id == Opportunity.company_id)
+        .outerjoin(OfferLineItem, OfferLineItem.opportunity_id == Opportunity.id)
     )
     if date_from:
         opp_q = opp_q.filter(Opportunity.data_creazione_sap >= date_from)

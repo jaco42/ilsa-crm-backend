@@ -30,11 +30,15 @@ def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=N
         q = q.filter(Order.sap_creato_da == agente)
     if agente_zona:
         from app.models.company import Company as CompanyModel
-        from sqlalchemy import or_
-        zona_sub = select(CompanyModel.id).where(
-            or_(CompanyModel.agente_ilsa == agente_zona, CompanyModel.agente_desco == agente_zona)
+        from sqlalchemy import or_, and_
+        ilsa_sub = select(CompanyModel.id).where(CompanyModel.agente_ilsa == agente_zona)
+        desco_sub = select(CompanyModel.id).where(CompanyModel.agente_desco == agente_zona)
+        q = q.filter(
+            or_(
+                and_(Order.company_id.in_(ilsa_sub), Order.org_cm == 'OC00'),
+                and_(Order.company_id.in_(desco_sub), Order.org_cm == 'OC02'),
+            )
         )
-        q = q.filter(Order.company_id.in_(zona_sub))
     if org_cm:
         q = q.filter(Order.org_cm == org_cm)
     if dal:

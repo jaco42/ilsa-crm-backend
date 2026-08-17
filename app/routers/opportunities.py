@@ -24,11 +24,15 @@ def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_
         q = q.filter(Opportunity.sap_creato_da == agente)
     if agente_zona:
         from app.models.company import Company as CompanyModel
-        from sqlalchemy import or_
-        zona_sub = select(CompanyModel.id).where(
-            or_(CompanyModel.agente_ilsa == agente_zona, CompanyModel.agente_desco == agente_zona)
+        from sqlalchemy import or_, and_
+        ilsa_sub = select(CompanyModel.id).where(CompanyModel.agente_ilsa == agente_zona)
+        desco_sub = select(CompanyModel.id).where(CompanyModel.agente_desco == agente_zona)
+        q = q.filter(
+            or_(
+                and_(Opportunity.company_id.in_(ilsa_sub), Opportunity.org_cm == 'OC00'),
+                and_(Opportunity.company_id.in_(desco_sub), Opportunity.org_cm == 'OC02'),
+            )
         )
-        q = q.filter(Opportunity.company_id.in_(zona_sub))
     if org_cm:
         q = q.filter(Opportunity.org_cm == org_cm)
     if scadenza_dal:
@@ -134,6 +138,16 @@ def stats_opportunity(
             base_opp_conds.append(Opportunity.company_id == company_id)
         if agente:
             base_opp_conds.append(Opportunity.sap_creato_da == agente)
+        if agente_zona:
+            from sqlalchemy import or_, and_
+            ilsa_sub = select(Company.id).where(Company.agente_ilsa == agente_zona)
+            desco_sub = select(Company.id).where(Company.agente_desco == agente_zona)
+            base_opp_conds.append(
+                or_(
+                    and_(Opportunity.company_id.in_(ilsa_sub), Opportunity.org_cm == 'OC00'),
+                    and_(Opportunity.company_id.in_(desco_sub), Opportunity.org_cm == 'OC02'),
+                )
+            )
         if scadenza_dal:
             base_opp_conds.append(Opportunity.data_scadenza >= scadenza_dal)
         if scadenza_al:
