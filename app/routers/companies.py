@@ -169,6 +169,7 @@ def lista_aziende(
     storico_contatti: str = Query(None),
     tipo_attivita: str = Query(None),
     agente: str = Query(None),
+    senza_agente: bool = Query(None),
     sort_by: str = Query("ragione_sociale"),
     sort_dir: str = Query("asc"),
     limit: int = Query(100),
@@ -309,6 +310,12 @@ def lista_aziende(
     if agente:
         from sqlalchemy import or_
         q = q.filter(or_(Company.agente_ilsa == agente, Company.agente_desco == agente))
+    if senza_agente:
+        from sqlalchemy import or_
+        q = q.filter(
+            or_(Company.agente_ilsa.is_(None), Company.agente_ilsa == ''),
+            or_(Company.agente_desco.is_(None), Company.agente_desco == ''),
+        )
     if tipo_attivita:
         q = q.filter(Company.tipo_attivita.ilike(f"%{tipo_attivita}%"))
 

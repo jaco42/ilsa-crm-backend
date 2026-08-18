@@ -11,6 +11,7 @@ from app.models.contact import Contact
 from app.models.company import Company, CompanyStatus, CompanyOrigin
 from app.models.note import Note
 from app.models.import_log import ImportLog
+from app.routers.companies import _auto_assign_agenti_bulk
 
 router = APIRouter(prefix="/import", tags=["import"], dependencies=[Depends(get_current_user)])
 
@@ -420,6 +421,12 @@ async def run_companies(
         if not paese_ok:
             skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Paese non riconosciuto: '{paese}'"})
             continue
+        if not paese and not provincia:
+            skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": "Paese e provincia mancanti"})
+            continue
+        if paese == 'IT' and not provincia:
+            skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": "Provincia obbligatoria per le aziende italiane"})
+            continue
 
         telefono = _get_val(row, col_map.get('telefono', {}))
         email = _get_val(row, col_map.get('email', {}))
@@ -536,6 +543,7 @@ async def run_companies(
         db.commit()
         db.refresh(log)
         import_log_id = str(log.id)
+        _auto_assign_agenti_bulk(db)
     else:
         import_log_id = None
 
@@ -607,6 +615,10 @@ async def stream_companies(
                         skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Provincia non riconosciuta: '{provincia}'"})
                     elif not paese_ok:
                         skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": f"Paese non riconosciuto: '{paese}'"})
+                    elif not paese and not provincia:
+                        skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": "Paese e provincia mancanti"})
+                    elif paese == 'IT' and not provincia:
+                        skipped.append({"riga": line, "ragione_sociale": ragione_sociale, "motivo": "Provincia obbligatoria per le aziende italiane"})
                     else:
                         telefono = _get_val(row, col_map.get('telefono', {}))
                         email = _get_val(row, col_map.get('email', {}))
@@ -689,6 +701,7 @@ async def stream_companies(
             db.add(log)
             db.commit()
             db.refresh(log)
+            _auto_assign_agenti_bulk(db)
             yield _json.dumps({
                 "type": "done",
                 "import_log_id": str(log.id),
