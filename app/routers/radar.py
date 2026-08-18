@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models.radar import RadarProdotto, RadarSegnalazione
 from app.models.company import Company
 from app.auth import get_current_user, is_admin, _user_zone
+from app.activity import log_activity
 
 router = APIRouter(prefix="/radar", tags=["radar"], dependencies=[Depends(get_current_user)])
 
@@ -122,6 +123,21 @@ def crea_segnalazione(data: dict, db: Session = Depends(get_db), current_user=De
         updated_by=data.get("updated_by"),
     )
     db.add(s)
+    db.flush()
+    company = db.query(Company).filter(Company.id == s.company_id).first() if s.company_id else None
+    prodotto = db.query(RadarProdotto).filter(RadarProdotto.id == s.prodotto_id).first()
+    log_activity(db, current_user.nome, "radar_creato", "radar",
+                 entity_id=s.id, company_id=str(s.company_id) if s.company_id else None,
+                 company_nome=company.ragione_sociale if company else None,
+                 detail={
+                     "prodotto": prodotto.nome if prodotto else None,
+                     "prodotto_id": str(s.prodotto_id),
+                     "l1": prodotto.categoria_l1 if prodotto else None,
+                     "l2": prodotto.categoria_l2 if prodotto else None,
+                     "quantita": s.quantita,
+                     "unita": s.unita,
+                     "note": (s.note or "")[:80] if s.note else None,
+                 })
     db.commit()
     db.refresh(s)
     db.refresh(s, ["company", "agente"])
@@ -129,15 +145,28 @@ def crea_segnalazione(data: dict, db: Session = Depends(get_db), current_user=De
 
 
 @router.patch("/segnalazioni/{segnalazione_id}")
-def aggiorna_segnalazione(segnalazione_id: str, data: dict, db: Session = Depends(get_db)):
+def aggiorna_segnalazione(segnalazione_id: str, data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     s = db.query(RadarSegnalazione).options(
-        joinedload(RadarSegnalazione.company), joinedload(RadarSegnalazione.agente)
+        joinedload(RadarSegnalazione.company), joinedload(RadarSegnalazione.agente),
+        joinedload(RadarSegnalazione.prodotto)
     ).filter(RadarSegnalazione.id == segnalazione_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Segnalazione non trovata")
     for key in ("quantita", "unita", "urgenza", "note", "updated_by"):
         if key in data:
             setattr(s, key, data[key])
+    log_activity(db, current_user.nome, "radar_modificato", "radar",
+                 entity_id=s.id, company_id=str(s.company_id) if s.company_id else None,
+                 company_nome=s.company.ragione_sociale if s.company else None,
+                 detail={
+                     "prodotto": s.prodotto.nome if s.prodotto else None,
+                     "prodotto_id": str(s.prodotto_id),
+                     "l1": s.prodotto.categoria_l1 if s.prodotto else None,
+                     "l2": s.prodotto.categoria_l2 if s.prodotto else None,
+                     "quantita": s.quantita,
+                     "unita": s.unita,
+                     "note": (s.note or "")[:80] if s.note else None,
+                 })
     db.commit()
     db.refresh(s)
     return _serialize_segnalazione(s)

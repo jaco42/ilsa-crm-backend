@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, joinedload, contains_eager
 from app.database import get_db
 from app.models.note import Note
 from app.auth import get_current_user
+from app.activity import log_activity
 
 router = APIRouter(prefix="/notes", tags=["notes"], dependencies=[Depends(get_current_user)])
 
@@ -20,9 +21,16 @@ def lista_note(company_id: str = Query(...), db: Session = Depends(get_db)):
 
 
 @router.post("/")
-def crea_nota(data: dict, db: Session = Depends(get_db)):
+def crea_nota(data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     note = Note(**data)
     db.add(note)
+    db.flush()
+    from app.models.company import Company
+    company = db.query(Company).filter(Company.id == note.company_id).first()
+    log_activity(db, current_user.nome, "nota_creata", "nota",
+                 entity_id=note.id, company_id=note.company_id,
+                 company_nome=company.ragione_sociale if company else None,
+                 detail={"testo": (note.testo or "")[:80]})
     db.commit()
     db.refresh(note)
     db.refresh(note, ["opportunity"])

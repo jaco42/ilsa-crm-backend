@@ -7,6 +7,7 @@ from app.models.contact import Contact
 from app.models.company import Company
 from app.models.note import Note
 from app.auth import get_current_user, allowed_company_ids
+from app.activity import log_activity
 
 router = APIRouter(prefix="/contacts", tags=["contacts"], dependencies=[Depends(get_current_user)])
 
@@ -136,6 +137,12 @@ def crea_contatto(data: dict, db: Session = Depends(get_db), current_user=Depend
     data['created_by'] = current_user.nome
     contact = Contact(**data)
     db.add(contact)
+    db.flush()
+    company = db.query(Company).filter(Company.id == contact.company_id).first() if contact.company_id else None
+    log_activity(db, current_user.nome, "contatto_creato", "contatto",
+                 entity_id=contact.id, company_id=contact.company_id,
+                 company_nome=company.ragione_sociale if company else None,
+                 detail={"nome": contact.nome, "ruolo": contact.ruolo})
     db.commit()
     db.refresh(contact)
     db.refresh(contact, ["company"])
@@ -150,6 +157,10 @@ def aggiorna_contatto(contact_id: str, data: dict, db: Session = Depends(get_db)
     data['created_by'] = current_user.nome
     for key, value in data.items():
         setattr(contact, key, value)
+    log_activity(db, current_user.nome, "contatto_modificato", "contatto",
+                 entity_id=contact.id, company_id=str(contact.company_id) if contact.company_id else None,
+                 company_nome=contact.company.ragione_sociale if contact.company else None,
+                 detail={"nome": contact.nome, "ruolo": contact.ruolo})
     db.commit()
     db.refresh(contact)
     return _serialize(contact)

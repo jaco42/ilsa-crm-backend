@@ -8,6 +8,7 @@ from app.models.opportunity import Opportunity
 from app.models.order import Order
 from app.models.line_item import LineItem
 from app.auth import get_current_user, company_agente_filter
+from app.activity import log_activity
 from app.services.opportunity_stats import build_scaduta_attiva
 from app.config import settings
 
@@ -609,9 +610,14 @@ def merge_aziende(data: dict, db: Session = Depends(get_db)):
 
 
 @router.post("/")
-def crea_azienda(data: dict, db: Session = Depends(get_db)):
+def crea_azienda(data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     company = Company(**data)
     db.add(company)
+    db.flush()
+    log_activity(db, current_user.nome, "azienda_creata", "azienda",
+                 entity_id=company.id, company_id=str(company.id),
+                 company_nome=company.ragione_sociale,
+                 detail={"citta": company.citta, "provincia": company.provincia})
     db.commit()
     db.refresh(company)
     return company
