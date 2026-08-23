@@ -6,6 +6,9 @@ from app.database import Base
 
 
 class RadarProdotto(Base):
+    # Prodotto censito nel catalogo Radar, creato manualmente dagli agenti.
+    # Supporta merge tra duplicati (merged_into_id).
+    # Distinto dalle stringhe libere nei line_items SAP: qui i prodotti sono strutturati e categorizzati.
     __tablename__ = "radar_prodotti"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -19,6 +22,8 @@ class RadarProdotto(Base):
 
 
 class RadarSegnalazione(Base):
+    # Interesse di una company per un prodotto del catalogo Radar, inserito dall'agente.
+    # Traccia quantità, urgenza e zona — permette di misurare la domanda di mercato.
     __tablename__ = "radar_segnalazioni"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

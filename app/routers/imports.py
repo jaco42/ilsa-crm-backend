@@ -397,8 +397,11 @@ async def run_companies(
     updated_snapshots: list[dict] = []
     note_objects: list[Note] = []
 
+    from collections import defaultdict
     existing_by_piva = {c.partita_iva: c for c in db.query(Company).filter(Company.partita_iva.isnot(None), Company.partita_iva != '').all()}
-    existing_by_nome = {c.ragione_sociale.lower(): c for c in db.query(Company).all()}
+    existing_by_nome: dict[str, list] = defaultdict(list)
+    for c in db.query(Company).all():
+        existing_by_nome[c.ragione_sociale.lower()].append(c)
 
     for i, row in enumerate(rows):
         line = i + 2
@@ -451,7 +454,7 @@ async def run_companies(
 
         existing = existing_by_piva.get(partita_iva) if partita_iva else None
         if not existing:
-            existing = existing_by_nome.get(ragione_sociale.lower())
+            existing = _match_by_nome_geo(existing_by_nome.get(ragione_sociale.lower(), []), paese, provincia)
 
         if existing:
             storico_merged = _append_storico(existing.storico_contatti, storico_contatti) if storico_contatti else existing.storico_contatti
@@ -595,8 +598,11 @@ async def stream_companies(
         total = len(rows)
 
         try:
+            from collections import defaultdict
             existing_by_piva = {c.partita_iva: c for c in db.query(Company).filter(Company.partita_iva.isnot(None), Company.partita_iva != '').all()}
-            existing_by_nome = {c.ragione_sociale.lower(): c for c in db.query(Company).all()}
+            existing_by_nome: dict[str, list] = defaultdict(list)
+            for c in db.query(Company).all():
+                existing_by_nome[c.ragione_sociale.lower()].append(c)
 
             for i, row in enumerate(rows):
                 line = i + 2
@@ -634,7 +640,7 @@ async def stream_companies(
                         }
                         existing = existing_by_piva.get(partita_iva) if partita_iva else None
                         if not existing:
-                            existing = existing_by_nome.get(ragione_sociale.lower())
+                            existing = _match_by_nome_geo(existing_by_nome.get(ragione_sociale.lower(), []), paese, provincia)
 
                         if existing:
                             storico_merged = _append_storico(existing.storico_contatti, storico_contatti) if storico_contatti else existing.storico_contatti
@@ -722,6 +728,23 @@ async def stream_companies(
     )
 
 
+def _match_by_nome_geo(candidates: list, paese: str | None, provincia: str | None):
+    """Fallback lookup per nome: richiede paese compatibile, e provincia per aziende IT."""
+    if not candidates:
+        return None
+    paese_up = (paese or '').upper()
+    prov_up = (provincia or '').upper()
+    for c in candidates:
+        c_paese = (c.paese or '').upper()
+        c_prov = (c.provincia or '').upper()
+        if paese_up and c_paese and c_paese != paese_up:
+            continue
+        if paese_up == 'IT' and prov_up and c_prov and c_prov != prov_up:
+            continue
+        return c
+    return None
+
+
 def _append_storico(existing: str | None, nuovo: str) -> str:
     if not existing:
         return nuovo
@@ -752,51 +775,13 @@ def _collect_notes(db, note_entries_cfg, row, contact_id, company, created_by, n
 # SAP import — solo admin
 # ---------------------------------------------------------------------------
 
-@router.post("/sap", dependencies=[Depends(require_admin)])
-async def import_sap(
-    kna1: UploadFile = File(...),
-    vbak: UploadFile = File(...),
-    vbap: UploadFile = File(...),
-    vbfa: UploadFile = File(...),
-    mara: UploadFile = File(None),
-    knvv: UploadFile = File(None),
-    db: Session = Depends(get_db),
-):
-    try:
-        from app.services.sap_import_service import load_csv_bytes, load_mara_lookup, run_import_core
-    except ImportError:
-        raise HTTPException(status_code=500, detail="pandas non installato sul server")
-
-    try:
-        clienti   = load_csv_bytes(await kna1.read())
-        docvend   = load_csv_bytes(await vbak.read())
-        posizioni = load_csv_bytes(await vbap.read())
-        flusso    = load_csv_bytes(await vbfa.read())
-        mara_lookup = load_mara_lookup(await mara.read()) if mara else {}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Errore lettura file: {e}")
-
-    try:
-        stats = run_import_core(clienti, docvend, posizioni, flusso, db, mara_lookup)
-        if knvv:
-            from app.services.sap_import_service import import_knvv
-            knvv_stats = import_knvv(await knvv.read(), db)
-            stats["knvv"] = knvv_stats
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Errore import: {e}")
-
-    return {"ok": True, "stats": stats}
-
-
 @router.post("/sap/stream", dependencies=[Depends(require_admin)])
 async def import_sap_stream(
     kna1: UploadFile = File(...),
     vbak: UploadFile = File(...),
     vbap: UploadFile = File(...),
     vbfa: UploadFile = File(...),
-    mara: UploadFile = File(None),
-    knvv: UploadFile = File(None),
+    knvv: UploadFile = File(...),
 ):
     try:
         import pandas as _pd; del _pd  # check pandas is available
@@ -804,13 +789,11 @@ async def import_sap_stream(
         raise HTTPException(status_code=500, detail="pandas non installato sul server")
 
     try:
-        # mara incluso nel dict così il generatore lo libera via .pop() subito dopo il lookup
         file_bytes = {
-            "mara": await mara.read() if mara else b"",
-            "knvv": await knvv.read() if knvv else b"",
             "kna1": await kna1.read(),
             "vbak": await vbak.read(),
             "vbfa": await vbfa.read(),
+            "knvv": await knvv.read(),
             "vbap": await vbap.read(),  # il più pesante, caricato per ultimo
         }
     except Exception as e:
@@ -824,39 +807,31 @@ async def import_sap_stream(
         import gc
         from app.database import SessionLocal
         from app.services.sap_import_service import (
-            load_csv_bytes, load_mara_lookup, _flusso_series,
-            import_companies_stream, import_prodotti_stream,
+            load_csv_bytes, _flusso_series,
+            import_companies_stream,
             import_offerte_stream, import_ordini_stream, _build_posizioni_index,
+            import_knvv,
         )
         db = SessionLocal()
         db.expire_on_commit = False
         db.execute(__import__('sqlalchemy').text("SET idle_in_transaction_session_timeout = '120s'"))
+        _zero = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": 0, "processed": 0}
+        fase_corrente = "avvio"
         try:
-            yield _chunk({"type": "progress", "pct": 5, "fase": "Lettura file CSV..."})
-
-            # MARA: carica solo 2 colonne, poi libera i bytes subito
-            mara_b = file_bytes.pop("mara")
-            mara_lookup = load_mara_lookup(mara_b) if mara_b else {}
-            del mara_b; gc.collect()
-
-            _zero = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": 0, "processed": 0}
-
-            # --- Companies 15% → 45% (KNA1: ~10 colonne su ~50) ---
+            # 8% → 12%: parsing file leggeri (KNA1, VBAK, VBFA, KNVV)
+            fase_corrente = "parsing KNA1"
+            yield _chunk({"type": "progress", "pct": 8, "fase": "Parsing KNA1..."})
             clienti = load_csv_bytes(file_bytes.pop("kna1"), file_type="kna1"); gc.collect()
-            companies_stats = dict(_zero)
-            for partial in import_companies_stream(clienti, db):
-                pct = 15 + int((partial["processed"] / max(partial["total"], 1)) * 30)
-                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo aziende...", "stats": {"companies": partial}})
-                companies_stats = partial
-            del clienti; gc.collect()
 
-            # --- Split VBAK in offerte/ordini (6 colonne su ~40) ---
+            fase_corrente = "parsing VBAK"
+            yield _chunk({"type": "progress", "pct": 9, "fase": "Parsing VBAK..."})
             docvend = load_csv_bytes(file_bytes.pop("vbak"), file_type="vbak"); gc.collect()
             offerte_df = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
             ordini_df  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
             del docvend; gc.collect()
 
-            # --- VBFA: solo 2 colonne, estrai dicts e libera ---
+            fase_corrente = "parsing VBFA"
+            yield _chunk({"type": "progress", "pct": 10, "fase": "Parsing VBFA..."})
             flusso = load_csv_bytes(file_bytes.pop("vbfa"), file_type="vbfa"); gc.collect()
             prec = _flusso_series(flusso, "Doc.prec.", "Doc. prec.")
             succ = _flusso_series(flusso, "Doc. succ.", "Doc.succ.")
@@ -864,68 +839,82 @@ async def import_sap_stream(
             offerta_per_ordine = dict(zip(succ, prec))
             del flusso, prec, succ; gc.collect()
 
-            yield _chunk({
-                "type": "progress", "pct": 44,
-                "fase": f"Aziende ok — VBAK: {len(offerte_df)} offerte + {len(ordini_df)} ordini",
-            })
+            yield _chunk({"type": "progress", "pct": 12,
+                          "fase": f"File leggeri pronti — {len(offerte_df)} offerte, {len(ordini_df)} ordini"})
 
-            # --- VBAP: 9 colonne su ~40, caricato per ultimo quando tutto il resto è libero ---
+            # 12% → 45%: aziende
+            fase_corrente = "import aziende"
+            companies_stats = dict(_zero)
+            for partial in import_companies_stream(clienti, db):
+                pct = 12 + int((partial["processed"] / max(partial["total"], 1)) * 33)
+                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo aziende...", "stats": {"companies": partial}})
+                companies_stats = partial
+            del clienti; gc.collect()
+
+            # 45% → 48%: caricamento VBAP (file più pesante, sincrono — yield espliciti per evitare freeze)
+            fase_corrente = "caricamento VBAP"
+            yield _chunk({"type": "progress", "pct": 45, "fase": "Caricamento VBAP (file più pesante)...",
+                          "stats": {"companies": companies_stats}})
             posizioni = load_csv_bytes(file_bytes.pop("vbap"), file_type="vbap"); gc.collect()
 
-            # Prodotti 45% → 60%
-            prodotti_stats = dict(_zero)
-            for partial in import_prodotti_stream(posizioni, db):
-                pct = 45 + int((partial["processed"] / max(partial["total"], 1)) * 15)
-                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo prodotti...", "stats": {"companies": companies_stats, "prodotti": partial}})
-                prodotti_stats = partial
-
-            # Indice posizioni costruito una sola volta — poi il DF viene liberato
+            fase_corrente = "costruzione indice prodotti"
+            yield _chunk({"type": "progress", "pct": 47, "fase": "Costruzione indice prodotti...",
+                          "stats": {"companies": companies_stats}})
             posizioni_by_doc = _build_posizioni_index(posizioni)
             del posizioni; gc.collect()
 
-            # Offerte 60% → 80%
+            # 48% → 68%: offerte
+            fase_corrente = "import offerte"
             offerte_stats = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0, "total": len(offerte_df), "processed": len(offerte_df)}
             if len(offerte_df) > 0:
-                for partial in import_offerte_stream(offerte_df, posizioni_by_doc, offerte_vinte, db, mara_lookup):
-                    pct = 60 + int((partial["processed"] / max(partial["total"], 1)) * 20)
-                    yield _chunk({"type": "progress", "pct": pct, "fase": "Importo offerte...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": partial}})
+                for partial in import_offerte_stream(offerte_df, posizioni_by_doc, offerte_vinte, db):
+                    pct = 48 + int((partial["processed"] / max(partial["total"], 1)) * 20)
+                    yield _chunk({"type": "progress", "pct": pct, "fase": "Importo offerte...",
+                                  "stats": {"companies": companies_stats, "offerte": partial}})
                     offerte_stats = partial
             else:
-                yield _chunk({"type": "progress", "pct": 80, "fase": "Offerte: 0 righe nel VBAK con prefisso 5xxxxx", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats}})
+                yield _chunk({"type": "progress", "pct": 68, "fase": "Nessuna offerta nel VBAK (prefisso 5xxxxx)",
+                              "stats": {"companies": companies_stats, "offerte": offerte_stats}})
             del offerte_df; gc.collect()
 
-            # Ordini 80% → 99%
+            # 69% → 90%: ordini
+            fase_corrente = "import ordini"
             ordini_stats = dict(_zero)
-            for partial in import_ordini_stream(ordini_df, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
-                pct = 80 + int((partial["processed"] / max(partial["total"], 1)) * 19)
-                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo ordini...", "stats": {"companies": companies_stats, "prodotti": prodotti_stats, "offerte": offerte_stats, "ordini": partial}})
+            for partial in import_ordini_stream(ordini_df, posizioni_by_doc, offerta_per_ordine, db):
+                pct = 69 + int((partial["processed"] / max(partial["total"], 1)) * 21)
+                yield _chunk({"type": "progress", "pct": pct, "fase": "Importo ordini...",
+                              "stats": {"companies": companies_stats, "offerte": offerte_stats, "ordini": partial}})
                 ordini_stats = partial
             del ordini_df, posizioni_by_doc; gc.collect()
 
-            knvv_stats = {}
-            knvv_b = file_bytes.pop("knvv", b"")
-            if knvv_b:
-                from app.services.sap_import_service import import_knvv
-                yield _chunk({"type": "progress", "pct": 99, "fase": "Importo agenti KNVV..."})
-                knvv_stats = import_knvv(knvv_b, db)
+            # 91% → 94%: KNVV agenti
+            fase_corrente = "import KNVV"
+            yield _chunk({"type": "progress", "pct": 91, "fase": "Importo assegnazioni agenti (KNVV)...",
+                          "stats": {"companies": companies_stats, "offerte": offerte_stats, "ordini": ordini_stats}})
+            knvv_stats = import_knvv(file_bytes.pop("knvv"), db)
+            yield _chunk({"type": "progress", "pct": 94,
+                          "fase": f"Agenti importati — {knvv_stats.get('inserted', 0)} assegnazioni, {knvv_stats.get('aziende_aggiornate', 0)} aziende aggiornate",
+                          "stats": {"companies": companies_stats, "offerte": offerte_stats, "ordini": ordini_stats, "agenti": knvv_stats}})
 
-            yield _chunk({"type": "progress", "pct": 99, "fase": "Auto-assegno agenti mancanti..."})
+            # 95% → 98%: auto-assign
+            fase_corrente = "auto-assign agenti"
+            yield _chunk({"type": "progress", "pct": 95, "fase": "Auto-assegno agenti per aziende senza zona...",
+                          "stats": {"companies": companies_stats, "offerte": offerte_stats, "ordini": ordini_stats, "agenti": knvv_stats}})
             from app.routers.companies import _auto_assign_agenti_bulk
             auto_assign_stats = _auto_assign_agenti_bulk(db)
 
             yield _chunk({"type": "done", "pct": 100, "stats": {
-                "companies":     companies_stats,
-                "prodotti":      prodotti_stats,
-                "offerte":       offerte_stats,
-                "ordini":        ordini_stats,
-                "knvv":          knvv_stats,
-                "auto_agenti":   auto_assign_stats,
+                "companies":   companies_stats,
+                "offerte":     offerte_stats,
+                "ordini":      ordini_stats,
+                "agenti":      knvv_stats,
+                "auto_agenti": auto_assign_stats,
             }})
         except Exception as e:
             import logging as _logging
-            _logging.getLogger(__name__).exception(f"[SAP STREAM ERROR] {e}")
+            _logging.getLogger(__name__).exception(f"[SAP STREAM ERROR] fase={fase_corrente} {e}")
             db.rollback()
-            yield _chunk({"type": "error", "message": str(e)})
+            yield _chunk({"type": "error", "message": str(e), "fase": fase_corrente})
         finally:
             db.close()
 

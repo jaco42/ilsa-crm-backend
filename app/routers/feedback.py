@@ -1,16 +1,14 @@
+import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.feedback import Feedback
-from app.routers.auth import get_current_user
-import logging
+from app.auth import get_current_user
+from app.services.email_service import send_email
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
-
-URGENZA_LABEL = {"bassa": "Bassa", "media": "Media", "alta": "Alta"}
-TIPO_LABEL = {"problema": "Problema", "feature": "Nuova feature"}
 
 
 @router.post("/")
@@ -26,7 +24,6 @@ def crea_feedback(data: dict, db: Session = Depends(get_db), current_user=Depend
     db.commit()
 
     try:
-        from app.services.email_service import send_email
         corpo = f"{current_user.nome.upper()} - {fb.messaggio or ''}"
         send_email(
             to=["favarojacopo8@gmail.com"],

@@ -6,6 +6,8 @@ from app.database import Base
 
 
 class Contact(Base):
+    # Referente di una company. Aggiunto solo manualmente o via import bulk CSV — non proviene da SAP.
+    # is_primary indica il referente principale dell'azienda.
     __tablename__ = "contacts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

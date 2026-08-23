@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agente
-from app.auth import get_current_user
+from app.auth import get_current_user, require_admin
 
 router = APIRouter(prefix="/agenti", tags=["agenti"], dependencies=[Depends(get_current_user)])
 
@@ -20,7 +20,7 @@ def get_agente(agente_id: str, db: Session = Depends(get_db)):
     return agente
 
 
-@router.post("/")
+@router.post("/", dependencies=[Depends(require_admin)])
 def crea_agente(data: dict, db: Session = Depends(get_db)):
     agente = Agente(**data)
     db.add(agente)
@@ -29,7 +29,7 @@ def crea_agente(data: dict, db: Session = Depends(get_db)):
     return agente
 
 
-@router.patch("/{agente_id}")
+@router.patch("/{agente_id}", dependencies=[Depends(require_admin)])
 def aggiorna_agente(agente_id: str, data: dict, db: Session = Depends(get_db)):
     agente = db.query(Agente).filter(Agente.id == agente_id).first()
     if not agente:

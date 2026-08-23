@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, case, select, exists, nullslast
+from sqlalchemy import func, case, select, exists, nullslast, or_, and_
 from app.database import get_db
 from app.models.opportunity import Opportunity
 from app.models.line_item import LineItem
@@ -9,11 +9,19 @@ from app.models.order import Order
 from app.models.company import Company
 from app.auth import get_current_user, allowed_doc_cond
 from app.services import funnel_service
+
 router = APIRouter(prefix="/opportunities", tags=["opportunities"], dependencies=[Depends(get_current_user)])
 
-TODAY = date.today
+STAGE_PERSA = ['Chiuso Perso']
 
-STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
+_OPP_SORT_COLS = {
+    'data_creazione_sap': Opportunity.data_creazione_sap,
+    'data_scadenza':      Opportunity.data_scadenza,
+    'valore_totale':      Opportunity.valore_totale,
+    'sap_document_id':    Opportunity.sap_document_id,
+    'sap_creato_da':      Opportunity.sap_creato_da,
+    'org_cm':             Opportunity.org_cm,
+}
 
 
 def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_max, creazione_dal, creazione_al, categoria=None, prodotto=None, org_cm=None, agente_zona=None, sap_id=None):
@@ -23,10 +31,8 @@ def _apply_opp_filters(q, agente, scadenza_dal, scadenza_al, valore_min, valore_
     if agente:
         q = q.filter(Opportunity.sap_creato_da == agente)
     if agente_zona:
-        from app.models.company import Company as CompanyModel
-        from sqlalchemy import or_, and_
-        ilsa_sub = select(CompanyModel.id).where(CompanyModel.agente_ilsa == agente_zona)
-        desco_sub = select(CompanyModel.id).where(CompanyModel.agente_desco == agente_zona)
+        ilsa_sub = select(Company.id).where(Company.agente_ilsa == agente_zona)
+        desco_sub = select(Company.id).where(Company.agente_desco == agente_zona)
         q = q.filter(
             or_(
                 and_(Opportunity.company_id.in_(ilsa_sub), Opportunity.org_cm == 'OC00'),
@@ -81,17 +87,8 @@ def stats_opportunity(
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
 ):
-    from datetime import timedelta
-    today = date.today()
-    un_mese_fa = today - timedelta(days=30)
-    scaduta_cond = (Opportunity.stage == 'Offerta Mandata') & (
-        (Opportunity.data_scadenza < today) |
-        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
-    )
-    attiva_cond = (Opportunity.stage == 'Offerta Mandata') & (
-        (Opportunity.data_scadenza >= today) |
-        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
-    )
+    scaduta_cond = Opportunity.stage == 'Scaduta'
+    attiva_cond = Opportunity.stage == 'Offerta Mandata'
 
     q = db.query(Opportunity)
     cond = allowed_doc_cond(current_user, Opportunity, Company)
@@ -140,7 +137,6 @@ def stats_opportunity(
         if agente:
             base_opp_conds.append(Opportunity.sap_creato_da == agente)
         if agente_zona:
-            from sqlalchemy import or_, and_
             ilsa_sub = select(Company.id).where(Company.agente_ilsa == agente_zona)
             desco_sub = select(Company.id).where(Company.agente_desco == agente_zona)
             base_opp_conds.append(
@@ -223,7 +219,6 @@ def lista_opportunity(
     limit: int = Query(100),
     offset: int = Query(0),
 ):
-    today = date.today()
     company_joined = False
     q = db.query(Opportunity).options(joinedload(Opportunity.company))
     cond = allowed_doc_cond(current_user, Opportunity, Company)
@@ -246,30 +241,9 @@ def lista_opportunity(
     elif stato == 'persa':
         q = q.filter(Opportunity.stage.in_(STAGE_PERSA))
     elif stato == 'scaduta':
-        from datetime import timedelta
-        un_mese_fa = today - timedelta(days=30)
-        q = q.filter(
-            Opportunity.stage == 'Offerta Mandata',
-            (Opportunity.data_scadenza < today) |
-            ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
-        )
+        q = q.filter(Opportunity.stage == 'Scaduta')
     elif stato == 'mandata':
-        from datetime import timedelta
-        un_mese_fa = today - timedelta(days=30)
-        q = q.filter(
-            Opportunity.stage == 'Offerta Mandata',
-            (Opportunity.data_scadenza >= today) |
-            ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
-        )
-    # Ordinamento server-side
-    _SORT_COLS = {
-        'data_creazione_sap': Opportunity.data_creazione_sap,
-        'data_scadenza':      Opportunity.data_scadenza,
-        'valore_totale':      Opportunity.valore_totale,
-        'sap_document_id':    Opportunity.sap_document_id,
-        'sap_creato_da':      Opportunity.sap_creato_da,
-        'org_cm':             Opportunity.org_cm,
-    }
+        q = q.filter(Opportunity.stage == 'Offerta Mandata')
     if sort_by == 'ragione_sociale':
         if not company_joined:
             q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
@@ -279,7 +253,7 @@ def lista_opportunity(
             q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
         sort_col = case((Opportunity.org_cm == 'OC00', Company.agente_ilsa), else_=Company.agente_desco)
     else:
-        sort_col = _SORT_COLS.get(sort_by, Opportunity.data_creazione_sap)
+        sort_col = _OPP_SORT_COLS.get(sort_by, Opportunity.data_creazione_sap)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
     rows = q.add_columns(func.count().over().label('_total')).order_by(order_expr).offset(offset).limit(limit).all()
     total = rows[0]._total if rows else 0
@@ -311,11 +285,6 @@ def get_opportunity(opportunity_id: str, db: Session = Depends(get_db)):
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity non trovata")
     return opp
-
-
-@router.post("/")
-def crea_opportunity(data: dict, db: Session = Depends(get_db)):
-    return funnel_service.crea_opportunity(db, data)
 
 
 @router.patch("/{opportunity_id}")

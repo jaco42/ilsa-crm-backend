@@ -2,15 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
-from app.auth import hash_password, get_current_user
+from app.auth import hash_password, get_current_user, require_admin
 
 router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(get_current_user)])
-
-
-def require_admin(current_user: User = Depends(get_current_user)):
-    if current_user.ruolo != "admin":
-        raise HTTPException(status_code=403, detail="Solo gli admin possono eseguire questa operazione")
-    return current_user
 
 
 @router.get("/")
@@ -26,7 +20,7 @@ def get_utente(user_id: str, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/")
+@router.post("/", dependencies=[Depends(require_admin)])
 def crea_utente(data: dict, db: Session = Depends(get_db)):
     user = User(**data)
     db.add(user)
@@ -35,7 +29,7 @@ def crea_utente(data: dict, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/{user_id}/set-password")
+@router.post("/{user_id}/set-password", dependencies=[Depends(require_admin)])
 def set_password(user_id: str, data: dict, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -45,7 +39,7 @@ def set_password(user_id: str, data: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.patch("/{user_id}")
+@router.patch("/{user_id}", dependencies=[Depends(require_admin)])
 def aggiorna_utente(user_id: str, data: dict, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session, joinedload, contains_eager
+from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models.note import Note
+from app.models.company import Company
 from app.auth import get_current_user
 from app.activity import log_activity
 
@@ -25,7 +26,6 @@ def crea_nota(data: dict, db: Session = Depends(get_db), current_user=Depends(ge
     note = Note(**data)
     db.add(note)
     db.flush()
-    from app.models.company import Company
     company = db.query(Company).filter(Company.id == note.company_id).first()
     log_activity(db, current_user.nome, "nota_creata", "nota",
                  entity_id=note.id, company_id=note.company_id,

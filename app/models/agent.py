@@ -5,6 +5,9 @@ from app.database import Base
 
 
 class Agente(Base):
+    # Agente commerciale censito nel CRM.
+    # I nomi sono storati come stringhe in Company.agente_ilsa/agente_desco (non FK).
+    # La tabella serve come lista per i dropdown del frontend e per le assegnazioni Radar.
     __tablename__ = "agenti"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

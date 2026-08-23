@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 from rapidfuzz import fuzz
 from app.models.company import Company, CompanyStatus
 from app.models.contact import Contact
@@ -75,7 +76,6 @@ def _rank(company: Company) -> int:
 
 
 def merge_companies(survivor: Company, duplicate: Company, db) -> None:
-    from datetime import datetime, timezone
     sid = survivor.id
     did = duplicate.id
 
@@ -138,15 +138,13 @@ def find_and_handle_duplicate(new_company_data: dict, db) -> tuple[bool, Company
 
     best_reason = None
     best_score_nome = 0
-    best_score_via = 0
     best_candidate = None
 
     for candidate in candidates:
-        reason, s_nome, s_via = score_match(candidate, temp)
+        reason, s_nome, _ = score_match(candidate, temp)
         if reason and s_nome > best_score_nome:
             best_reason = reason
             best_score_nome = s_nome
-            best_score_via = s_via
             best_candidate = candidate
 
     if not best_candidate:

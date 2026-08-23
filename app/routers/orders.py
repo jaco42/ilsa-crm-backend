@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, select, exists, nullslast, case
+from sqlalchemy import func, select, exists, nullslast, case, or_, and_
 from app.database import get_db
 from app.models.order import Order
 from app.models.line_item import LineItem
@@ -10,7 +10,6 @@ from app.models.company import Company
 from app.auth import get_current_user, allowed_doc_cond
 
 router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(get_current_user)])
-
 
 TIPO_DOC_GROUPS = {
     "standard":  ["ZOI0", "ZOC0", "ZOE0"],
@@ -21,18 +20,23 @@ TIPO_DOC_GROUPS = {
     "amministrativo": ["ZAMM"],
 }
 
+_ORDER_SORT_COLS = {
+    'data_ordine':    Order.data_ordine,
+    'valore_totale':  Order.valore_totale,
+    'sap_document_id': Order.sap_document_id,
+    'org_cm':         Order.org_cm,
+    'sap_creato_da':  Order.sap_creato_da,
+}
+
 def _apply_order_filters(q, agente, dal, al, valore_min, valore_max, categoria=None, prodotto=None, org_cm=None, agente_zona=None, tipo_doc=None, sap_id=None):
     if sap_id:
-        from app.models.company import Company as CompanyModel
-        sap_sub = select(CompanyModel.id).where(CompanyModel.sap_customer_id == sap_id)
+        sap_sub = select(Company.id).where(Company.sap_customer_id == sap_id)
         q = q.filter(Order.company_id.in_(sap_sub))
     if agente:
         q = q.filter(Order.sap_creato_da == agente)
     if agente_zona:
-        from app.models.company import Company as CompanyModel
-        from sqlalchemy import or_, and_
-        ilsa_sub = select(CompanyModel.id).where(CompanyModel.agente_ilsa == agente_zona)
-        desco_sub = select(CompanyModel.id).where(CompanyModel.agente_desco == agente_zona)
+        ilsa_sub = select(Company.id).where(Company.agente_ilsa == agente_zona)
+        desco_sub = select(Company.id).where(Company.agente_desco == agente_zona)
         q = q.filter(
             or_(
                 and_(Order.company_id.in_(ilsa_sub), Order.org_cm == 'OC00'),
@@ -168,18 +172,11 @@ def lista_ordini(
             Company.ragione_sociale.ilike(f"%{search}%") |
             Company.sap_customer_id.ilike(f"%{search}%")
         )
-    _SORT_COLS = {
-        'data_ordine':    Order.data_ordine,
-        'valore_totale':  Order.valore_totale,
-        'sap_document_id': Order.sap_document_id,
-        'org_cm':         Order.org_cm,
-        'sap_creato_da':  Order.sap_creato_da,
-    }
     if sort_by == 'agente':
         q = q.join(Company, Order.company_id == Company.id, isouter=True)
         sort_col = case((Order.org_cm == 'OC00', Company.agente_ilsa), else_=Company.agente_desco)
     else:
-        sort_col = _SORT_COLS.get(sort_by, Order.data_ordine)
+        sort_col = _ORDER_SORT_COLS.get(sort_by, Order.data_ordine)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
     rows = q.add_columns(func.count().over().label('_total')).order_by(order_expr).offset(offset).limit(limit).all()
     total = rows[0]._total if rows else 0

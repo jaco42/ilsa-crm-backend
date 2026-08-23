@@ -11,7 +11,6 @@ from app.models.company_sap_ids import CompanySapId
 from app.models.line_item import LineItem
 from app.models.opportunity import Opportunity
 from app.models.order import Order
-from app.models.prodotto import Prodotto
 from app.services.merge import find_and_handle_duplicate, score_match
 
 log = logging.getLogger(__name__)
@@ -65,11 +64,9 @@ _VBAP_COLS = {"Doc. vend.", "Materiale", "Definizione",
               "Qtà ordine", "Qt? ordine", "Qt ordine", "UM", "Prz. netto", "Val.netto",
               "Gerarchia prodotti", "Rf"}
 _VBFA_COLS = {"Doc.prec.", "Doc. prec.", "Doc. succ.", "Doc.succ."}
-_MARA_COLS = {"Materiale", "MATNR", "Gr.merci", "Gruppo merci", "MATKL", "Gr. merci"}
 
 FILE_COLS = {
-    "kna1": _KNA1_COLS, "vbak": _VBAK_COLS, "vbap": _VBAP_COLS,
-    "vbfa": _VBFA_COLS, "mara": _MARA_COLS,
+    "kna1": _KNA1_COLS, "vbak": _VBAK_COLS, "vbap": _VBAP_COLS, "vbfa": _VBFA_COLS,
 }
 
 
@@ -277,20 +274,6 @@ def _flusso_series(df: pd.DataFrame, *candidates: str) -> pd.Series:
     )
 
 
-def load_mara_lookup(content: bytes) -> dict:
-    """Ritorna {codice_sap: gr_merci} da MARA (non più usato per L1/L2, tenuto per compat)."""
-    try:
-        df = load_csv_bytes(content, file_type="mara")
-    except Exception:
-        return {}
-    lookup = {}
-    for _, row in df.iterrows():
-        codice = get(row, "Materiale", "MATNR")
-        gr = get(row, "Gr.merci", "Gruppo merci", "MATKL", "Gr. merci")
-        if codice and gr:
-            lookup[codice] = gr
-    return lookup
-
 
 def classify_customer_code(codice: str) -> str:
     if not codice.isnumeric():
@@ -475,68 +458,19 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
     log.info(f"Companies:  {inserted_count} inserite  |  {already_present_count} già presenti  |  {skipped} saltate  |  {sec_updated} secondary aggiornate")
 
 
-def import_companies(clienti: pd.DataFrame, db: Session) -> dict:
-    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for partial in import_companies_stream(clienti, db):
-        result = partial
-    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
 
-# ---------------------------------------------------------------------------
-# Prodotti
-# ---------------------------------------------------------------------------
-
-def import_prodotti_stream(posizioni: pd.DataFrame, db: Session):
-    inserted = updated = identical = 0
-    deduped = posizioni.drop_duplicates(subset=["Materiale"])
-    total = len(deduped)
-
-    # Pre-carica tutti i prodotti esistenti in 1 query
-    existing = {p.codice_sap: p for p in db.query(Prodotto).all()}
-
-    to_insert = []
-    for i, (_, row) in enumerate(deduped.iterrows()):
-        codice = get(row, "Materiale")
-        if not codice:
-            continue
-        nome = get(row, "Definizione") or codice
-        prodotto = existing.get(codice)
-        if prodotto:
-            if prodotto.nome != nome:
-                prodotto.nome = nome
-                updated += 1
-            else:
-                identical += 1
-        else:
-            to_insert.append(Prodotto(codice_sap=codice, nome=nome, attivo=True))
-            inserted += 1
-
-        if (i + 1) % 500 == 0 or i == total - 1:
-            yield {"inserted": inserted, "updated": updated, "identical": identical, "skipped": 0,
-                   "processed": i + 1, "total": total}
-
-    if to_insert:
-        db.add_all(to_insert)
-    db.commit()
-    log.info(f"Prodotti:   {inserted} inseriti  |  {updated} aggiornati  |  {identical} identici")
-
-
-def import_prodotti(posizioni: pd.DataFrame, db: Session) -> dict:
-    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for partial in import_prodotti_stream(posizioni, db):
-        result = partial
-    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
 
 # ---------------------------------------------------------------------------
 # Offerte
 # ---------------------------------------------------------------------------
 
-def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte_vinte: set, db: Session, mara_lookup: dict = None):
+def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte_vinte: set, db: Session):
     import time as _time
     import uuid as _uuid
     from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from sqlalchemy import func as _func
+    from sqlalchemy import func as _func, case as _case
 
     skipped = 0
     companies = _build_companies_lookup(db)
@@ -592,7 +526,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             index_elements=["sap_document_id"],
             set_={
                 "company_id":        stmt.excluded.company_id,
-                "stage":             stmt.excluded.stage,
+                "stage":             _case(
+                    (stmt.excluded.stage == STAGE_VINTO, STAGE_VINTO),
+                    else_=Opportunity.__table__.c.stage,
+                ),
                 "tipo_doc":          _func.coalesce(stmt.excluded.tipo_doc, Opportunity.__table__.c.tipo_doc),
                 "org_cm":            stmt.excluded.org_cm,
                 "valore_totale":     stmt.excluded.valore_totale,
@@ -664,19 +601,13 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
     log.info(f"Offerte:    {upserted} upsertate  |  {skipped} saltate  |  {total_li} righe")
 
 
-def import_offerte(offerte: pd.DataFrame, posizioni: pd.DataFrame, offerte_vinte: set, db: Session, mara_lookup: dict = None) -> dict:
-    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    posizioni_by_doc = _build_posizioni_index(posizioni)
-    for partial in import_offerte_stream(offerte, posizioni_by_doc, offerte_vinte, db, mara_lookup):
-        result = partial
-    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
 
 # ---------------------------------------------------------------------------
 # Ordini
 # ---------------------------------------------------------------------------
 
-def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None):
+def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_per_ordine: dict, db: Session):
     import time as _time
     import uuid as _uuid
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -742,7 +673,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
             "sap_creato_da": row.get("Creato") or None,
         })
-        if opp_id and opp_stage == STAGE_OFFERTA:
+        if opp_id and opp_stage in (STAGE_OFFERTA, "Scaduta"):
             opp_ids_to_win.append(opp_id)
     ord_inserted_count = sum(1 for r in all_rows if r["sap_document_id"] not in existing_order_sap_ids)
     ord_already_present_count = len(all_rows) - ord_inserted_count
@@ -850,43 +781,7 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
     log.info(f"Ordini:     {upserted} upsertati  |  {skipped} saltati  |  {total_li} righe")
 
 
-def import_ordini(ordini: pd.DataFrame, posizioni: pd.DataFrame, offerta_per_ordine: dict, db: Session, mara_lookup: dict = None) -> dict:
-    result = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    posizioni_by_doc = _build_posizioni_index(posizioni)
-    for partial in import_ordini_stream(ordini, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
-        result = partial
-    return {k: result[k] for k in ["inserted", "updated", "identical", "skipped"]}
 
-
-# ---------------------------------------------------------------------------
-# run_import_core — endpoint non-streaming
-# ---------------------------------------------------------------------------
-
-def run_import_core(clienti: pd.DataFrame, docvend: pd.DataFrame, posizioni: pd.DataFrame, flusso: pd.DataFrame, db: Session, mara_lookup: dict = None) -> dict:
-    offerte = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
-    ordini  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
-    prec = _flusso_series(flusso, "Doc.prec.", "Doc. prec.")
-    succ = _flusso_series(flusso, "Doc. succ.", "Doc.succ.")
-    offerte_vinte      = set(prec.unique())
-    offerta_per_ordine = dict(zip(succ, prec))
-
-    log.info(f"Avvio import: {len(clienti)} clienti, {len(offerte)} offerte, {len(ordini)} ordini, {len(posizioni)} posizioni")
-
-    companies_r = import_companies(clienti, db)
-    prodotti_r  = import_prodotti(posizioni, db)
-    posizioni_by_doc = _build_posizioni_index(posizioni)
-
-    offerte_r = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for p in import_offerte_stream(offerte, posizioni_by_doc, offerte_vinte, db, mara_lookup):
-        offerte_r = p
-    offerte_r = {k: offerte_r[k] for k in ["inserted", "updated", "identical", "skipped"]}
-
-    ordini_r = {"inserted": 0, "updated": 0, "identical": 0, "skipped": 0}
-    for p in import_ordini_stream(ordini, posizioni_by_doc, offerta_per_ordine, db, mara_lookup):
-        ordini_r = p
-    ordini_r = {k: ordini_r[k] for k in ["inserted", "updated", "identical", "skipped"]}
-
-    return {"companies": companies_r, "prodotti": prodotti_r, "offerte": offerte_r, "ordini": ordini_r}
 
 
 def import_knvv(content: bytes, db: Session) -> dict:

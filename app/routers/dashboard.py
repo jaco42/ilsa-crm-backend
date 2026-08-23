@@ -1,19 +1,18 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case
+from sqlalchemy import func, case, or_
 from app.database import get_db
 from app.models.order import Order
 from app.models.line_item import LineItem
 from app.models.opportunity import Opportunity
 from app.models.company import Company
 from app.auth import get_current_user, allowed_company_ids
-from datetime import timedelta
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(get_current_user)])
 
 MESI_SHORT = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
-STAGE_PERSA = ['Drop pre-offerta', 'Drop post-offerta', 'Chiuso Perso']
+STAGE_PERSA = ['Chiuso Perso']
 
 
 def _since(months_back: int) -> date:
@@ -23,8 +22,6 @@ def _since(months_back: int) -> date:
 
 
 def _agente_subq(agente, db):
-    from sqlalchemy import or_
-    from app.models.company import Company
     if not agente:
         return None
     return db.query(Company.id).filter(
@@ -190,7 +187,6 @@ def dashboard_kpi(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    today = date.today()
     allowed = allowed_company_ids(current_user, db)
     agente_ids = _agente_subq(agente, db)
 
@@ -224,15 +220,8 @@ def dashboard_kpi(
         nc_q = nc_q.filter(Order.org_cm == org_cm)
     nuovi_clienti = int(nc_q.scalar() or 0)
 
-    un_mese_fa = today - timedelta(days=30)
-    scaduta_cond = (Opportunity.stage == "Offerta Mandata") & (
-        (Opportunity.data_scadenza < today) |
-        ((Opportunity.data_scadenza == None) & (Opportunity.data_creazione_sap != None) & (Opportunity.data_creazione_sap < un_mese_fa))
-    )
-    attiva_cond = (Opportunity.stage == "Offerta Mandata") & (
-        (Opportunity.data_scadenza >= today) |
-        ((Opportunity.data_scadenza == None) & ((Opportunity.data_creazione_sap == None) | (Opportunity.data_creazione_sap >= un_mese_fa)))
-    )
+    scaduta_cond = Opportunity.stage == "Scaduta"
+    attiva_cond = Opportunity.stage == "Offerta Mandata"
 
     opp_q = db.query(
         func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),

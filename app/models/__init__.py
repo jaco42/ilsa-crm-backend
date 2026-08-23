@@ -2,7 +2,6 @@ from app.models.company import Company
 from app.models.contact import Contact
 from app.models.user import User
 from app.models.agent import Agente
-from app.models.prodotto import Prodotto
 from app.models.opportunity import Opportunity
 from app.models.line_item import LineItem
 from app.models.order import Order

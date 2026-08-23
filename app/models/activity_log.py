@@ -5,6 +5,9 @@ from app.database import Base
 
 
 class ActivityLog(Base):
+    # Log degli eventi significativi nel CRM (es. modifica stage, cambio agente, merge company).
+    # Non ha FK esplicite sulle entità per sopravvivere a eventuali cancellazioni.
+    # company_id/company_nome duplicati come stringhe per lo stesso motivo.
     __tablename__ = "activity_log"
 
     id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

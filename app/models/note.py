@@ -6,6 +6,8 @@ from app.database import Base
 
 
 class Note(Base):
+    # Nota testuale inserita manualmente su una company, opzionalmente collegata a offerta o contatto.
+    # original_company_id conserva il legame originale dopo un merge di company.
     __tablename__ = "notes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

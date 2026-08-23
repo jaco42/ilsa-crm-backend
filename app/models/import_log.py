@@ -6,6 +6,8 @@ from app.database import Base
 
 
 class ImportLog(Base):
+    # Log di un import bulk CSV di aziende o contatti.
+    # Registra creati/aggiornati/saltati con snapshot prima/dopo, per permettere l'undo dell'import.
     __tablename__ = "import_logs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

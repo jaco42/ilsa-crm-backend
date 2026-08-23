@@ -6,6 +6,9 @@ from app.database import Base
 
 
 class EmailReminder(Base):
+    # Email programmata da un agente per una data futura.
+    # Il job APScheduler (ogni minuto) processa le pending con scheduled_at passato via Resend,
+    # poi aggiorna status a 'sent'/'failed'.
     __tablename__ = "email_reminders"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

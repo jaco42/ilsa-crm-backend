@@ -12,6 +12,9 @@ class RuoloUtente(str, enum.Enum):
 
 
 class User(Base):
+    # Utente con accesso al CRM. Ruoli: admin (accesso completo), rep (agente), support.
+    # zone_assegnate filtra le company visibili per i rep.
+    # Autenticazione JWT, password storata come hash bcrypt.
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

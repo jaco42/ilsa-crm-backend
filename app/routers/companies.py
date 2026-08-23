@@ -1,5 +1,5 @@
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, select
 from app.database import get_db
@@ -9,11 +9,8 @@ from app.models.order import Order
 from app.models.line_item import LineItem
 from app.auth import get_current_user, company_agente_filter
 from app.activity import log_activity
-from app.services.opportunity_stats import build_scaduta_attiva
-from app.config import settings
 
 router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(get_current_user)])
-service_router = APIRouter(prefix="/companies", tags=["companies"])
 
 
 def _status_dinamico(c: Company) -> str:
@@ -192,8 +189,8 @@ def lista_aziende(
     min_offerte_totali: int = Query(None),
     max_offerte_totali: int = Query(None),
 ):
-    today = date.today()
-    scaduta_cond, attiva_cond = build_scaduta_attiva(today)
+    scaduta_cond = Opportunity.stage == "Scaduta"
+    attiva_cond = Opportunity.stage == "Offerta Mandata"
     from sqlalchemy.orm import aliased
     _OppCompany = aliased(Company)
     _effective_opp_company = func.coalesce(_OppCompany.merged_into, _OppCompany.id)
@@ -641,69 +638,6 @@ def elimina_azienda(company_id: str, db: Session = Depends(get_db)):
     db.commit()
 
 
-
-def _auth_service(x_service_key: str):
-    if not settings.service_api_key or x_service_key != settings.service_api_key:
-        raise HTTPException(status_code=403, detail="Service key non valida")
-
-
-def _apply_enrichment(company: Company, data: dict, db: Session) -> dict:
-    ENRICHMENT_FIELDS = {"website", "email", "telefono"}
-    updated = {}
-    for field, value in data.items():
-        if field not in ENRICHMENT_FIELDS:
-            continue
-        if value and not getattr(company, field):
-            setattr(company, field, value)
-            updated[field] = value
-    db.commit()
-    return updated
-
-
-@service_router.patch("/{company_id}/enrich")
-def enrich_azienda(
-    company_id: str,
-    data: dict,
-    db: Session = Depends(get_db),
-    x_service_key: str = Header(None),
-):
-    _auth_service(x_service_key)
-    company = db.query(Company).filter(Company.id == company_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Azienda non trovata")
-    return {"updated": _apply_enrichment(company, data, db)}
-
-
-@service_router.patch("/enrich-by-sap/{sap_id}")
-def enrich_azienda_by_sap(
-    sap_id: str,
-    data: dict,
-    db: Session = Depends(get_db),
-    x_service_key: str = Header(None),
-):
-    _auth_service(x_service_key)
-    company = db.query(Company).filter(Company.sap_customer_id == sap_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Azienda non trovata")
-    return {"updated": _apply_enrichment(company, data, db)}
-
-
-@service_router.delete("/enrich-by-sap/{sap_id}")
-def clear_enrichment_by_sap(
-    sap_id: str,
-    db: Session = Depends(get_db),
-    x_service_key: str = Header(None),
-):
-    _auth_service(x_service_key)
-    company = db.query(Company).filter(Company.sap_customer_id == sap_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Azienda non trovata")
-    cleared = {f: getattr(company, f) for f in ("website", "email", "telefono") if getattr(company, f)}
-    company.website = None
-    company.email = None
-    company.telefono = None
-    db.commit()
-    return {"cleared": list(cleared.keys())}
 
 
 @router.patch("/{company_id}")

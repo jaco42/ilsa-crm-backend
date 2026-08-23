@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, nullslast
+from sqlalchemy import func, nullslast, or_, select
 from app.database import get_db
 from app.models.contact import Contact
 from app.models.company import Company
@@ -10,6 +10,17 @@ from app.auth import get_current_user, allowed_company_ids
 from app.activity import log_activity
 
 router = APIRouter(prefix="/contacts", tags=["contacts"], dependencies=[Depends(get_current_user)])
+
+_SORT_COLS = {
+    'nome':             Contact.nome,
+    'paese':            Company.paese,
+    'ragione_sociale':  Company.ragione_sociale,
+    'ruolo':            Contact.ruolo,
+    'storico_contatti': Contact.storico_contatti,
+    'agente':           Company.agente_ilsa,
+    'updated_at':       Contact.updated_at,
+    'created_by':       Contact.created_by,
+}
 
 
 @router.get("/")
@@ -34,7 +45,6 @@ def lista_contatti(
     query = db.query(Contact).join(Contact.company).options(joinedload(Contact.company))
     subq = allowed_company_ids(current_user, db)
     if subq is not None:
-        from sqlalchemy import or_
         zone = current_user.zone_assegnate or []
         query = query.filter(
             Contact.company_id.in_(subq),
@@ -44,7 +54,6 @@ def lista_contatti(
         query = query.filter(Contact.company_id == company_id)
     if search:
         q = f"%{search}%"
-        from sqlalchemy import or_
         query = query.filter(or_(
             Contact.nome.ilike(q),
             Contact.ruolo.ilike(q),
@@ -61,7 +70,6 @@ def lista_contatti(
     if storico_contatti:
         query = query.filter(Contact.storico_contatti.ilike(f"%{storico_contatti}%"))
     if agente:
-        from sqlalchemy import or_
         query = query.filter(or_(Company.agente_ilsa == agente, Company.agente_desco == agente))
     if created_by_f:
         query = query.filter(Contact.created_by == created_by_f)
@@ -69,16 +77,6 @@ def lista_contatti(
         query = query.filter(Contact.created_at >= created_at_dal)
     if created_at_al:
         query = query.filter(Contact.created_at <= created_at_al)
-    _SORT_COLS = {
-        'nome':           Contact.nome,
-        'paese':          Company.paese,
-        'ragione_sociale': Company.ragione_sociale,
-        'ruolo':          Contact.ruolo,
-        'storico_contatti': Contact.storico_contatti,
-        'agente':         Company.agente_ilsa,
-        'updated_at':     Contact.updated_at,
-        'created_by':     Contact.created_by,
-    }
     sort_col = _SORT_COLS.get(sort_by, Contact.nome)
     order_expr = nullslast(sort_col.asc() if sort_dir == 'asc' else sort_col.desc())
     query = query.order_by(order_expr)
@@ -94,7 +92,6 @@ def lista_contatti(
 
 @router.get("/meta")
 def contacts_meta(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    from sqlalchemy import select, or_
     company_ids_with_contacts = select(Contact.company_id).distinct()
     agenti_ilsa = db.query(Company.agente_ilsa).filter(
         Company.id.in_(company_ids_with_contacts),

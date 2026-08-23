@@ -1,3 +1,4 @@
+import re
 import resend
 from app.config import settings
 
@@ -14,8 +15,6 @@ def send_email(
 
     from_addr = settings.resend_from
     if sender_name:
-        # Inject sender name while keeping the configured address
-        import re
         addr = re.search(r'<(.+?)>', from_addr)
         email_part = addr.group(1) if addr else from_addr
         from_addr = f"{sender_name} <{email_part}>"

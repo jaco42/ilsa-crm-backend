@@ -5,6 +5,8 @@ from app.database import Base
 
 
 class Feedback(Base):
+    # Segnalazione interna degli utenti CRM: bug, feature request o miglioramento.
+    # Visibile agli admin nel CRM, non collegata a sistemi esterni.
     __tablename__ = "feedback"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

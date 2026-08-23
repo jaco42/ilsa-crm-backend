@@ -7,8 +7,6 @@ class Settings(BaseSettings):
 
     resend_api_key: str = ""
     resend_from: str = "ILSA CRM <onboarding@resend.dev>"
-    groq_api_key: str = ""
-    service_api_key: str = ""
     allowed_origins: str = "http://localhost:5173,http://localhost:5174"
 
     class Config:

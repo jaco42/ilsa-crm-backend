@@ -6,6 +6,9 @@ from app.database import Base
 
 
 class CompanySapId(Base):
+    # SAP ID secondario di una company.
+    # Una company può avere più codici SAP se la stessa azienda reale ha filiali o codici diversi in SAP.
+    # Il codice principale è Company.sap_customer_id; quelli aggiuntivi sono qui.
     __tablename__ = "company_sap_ids"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
