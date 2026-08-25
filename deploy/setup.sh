@@ -74,8 +74,6 @@ curl http://localhost:8000/health
 
 # Sostituisci TUODOMINIO.IT con il tuo dominio reale nel file
 # prima di copiarlo
-sed -i 's/TUODOMINIO.IT/api.ilsacrm.it/g' deploy/nginx.conf
-
 # Copia la configurazione nginx
 cp deploy/nginx.conf /etc/nginx/sites-available/crm
 ln -s /etc/nginx/sites-available/crm /etc/nginx/sites-enabled/crm
@@ -97,7 +95,7 @@ systemctl restart nginx
 # Prima assicurati che il dominio punti già all'IP di questo server
 # (aggiorna il DNS e aspetta qualche minuto)
 
-certbot --nginx -d api.ilsacrm.it
+certbot --nginx -d api.ilsacrmbackend.online
 
 # Certbot chiederà la tua email e accetti i termini.
 # Alla fine configura nginx automaticamente per HTTPS.
@@ -126,7 +124,7 @@ certbot renew --dry-run
 # ============================================================
 
 # Nel file .env.production del frontend (ilsa-crm):
-# VITE_API_BASE=https://api.ilsacrm.it
+# VITE_API_BASE=https://api.ilsacrmbackend.online
 
 # Poi fai deploy del frontend (Netlify rileva automaticamente il push su GitHub)
 
