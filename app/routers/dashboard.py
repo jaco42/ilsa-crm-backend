@@ -1,7 +1,7 @@
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, or_
+from sqlalchemy import func, case, or_, and_
 from app.database import get_db
 from app.models.order import Order
 from app.models.line_item import LineItem
@@ -220,8 +220,25 @@ def dashboard_kpi(
         nc_q = nc_q.filter(Order.org_cm == org_cm)
     nuovi_clienti = int(nc_q.scalar() or 0)
 
-    scaduta_cond = Opportunity.stage == "Scaduta"
-    attiva_cond = Opportunity.stage == "Offerta Mandata"
+    today = date.today()
+    scaduta_cond = or_(
+        Opportunity.stage == "Scaduta",
+        and_(
+            Opportunity.stage == "Offerta Mandata",
+            or_(
+                and_(Opportunity.data_scadenza != None, Opportunity.data_scadenza < today),
+                and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap != None, Opportunity.data_creazione_sap + 30 < today)
+            )
+        )
+    )
+    attiva_cond = and_(
+        Opportunity.stage == "Offerta Mandata",
+        or_(
+            and_(Opportunity.data_scadenza != None, Opportunity.data_scadenza >= today),
+            and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap != None, Opportunity.data_creazione_sap + 30 >= today),
+            and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap == None)
+        )
+    )
 
     opp_q = db.query(
         func.count(case((Opportunity.stage == "Chiuso Vinto", 1))),
