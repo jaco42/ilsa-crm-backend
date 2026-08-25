@@ -241,9 +241,29 @@ def lista_opportunity(
     elif stato == 'persa':
         q = q.filter(Opportunity.stage.in_(STAGE_PERSA))
     elif stato == 'scaduta':
-        q = q.filter(Opportunity.stage == 'Scaduta')
+        today = date.today()
+        q = q.filter(
+            or_(
+                Opportunity.stage == 'Scaduta',
+                and_(
+                    Opportunity.stage == 'Offerta Mandata',
+                    or_(
+                        and_(Opportunity.data_scadenza != None, Opportunity.data_scadenza < today),
+                        and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap != None, Opportunity.data_creazione_sap + 30 < today)
+                    )
+                )
+            )
+        )
     elif stato == 'mandata':
-        q = q.filter(Opportunity.stage == 'Offerta Mandata')
+        today = date.today()
+        q = q.filter(
+            Opportunity.stage == 'Offerta Mandata',
+            or_(
+                and_(Opportunity.data_scadenza != None, Opportunity.data_scadenza >= today),
+                and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap != None, Opportunity.data_creazione_sap + 30 >= today),
+                and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap == None)
+            )
+        )
     if sort_by == 'ragione_sociale':
         if not company_joined:
             q = q.join(Company, Opportunity.company_id == Company.id, isouter=True)
