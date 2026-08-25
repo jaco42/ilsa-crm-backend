@@ -87,8 +87,25 @@ def stats_opportunity(
     kpi_dal: date = Query(None),
     kpi_al: date = Query(None),
 ):
-    scaduta_cond = Opportunity.stage == 'Scaduta'
-    attiva_cond = Opportunity.stage == 'Offerta Mandata'
+    today = date.today()
+    scaduta_cond = or_(
+        Opportunity.stage == 'Scaduta',
+        and_(
+            Opportunity.stage == 'Offerta Mandata',
+            or_(
+                and_(Opportunity.data_scadenza != None, Opportunity.data_scadenza < today),
+                and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap != None, Opportunity.data_creazione_sap + 30 < today)
+            )
+        )
+    )
+    attiva_cond = and_(
+        Opportunity.stage == 'Offerta Mandata',
+        or_(
+            and_(Opportunity.data_scadenza != None, Opportunity.data_scadenza >= today),
+            and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap != None, Opportunity.data_creazione_sap + 30 >= today),
+            and_(Opportunity.data_scadenza == None, Opportunity.data_creazione_sap == None)
+        )
+    )
 
     q = db.query(Opportunity)
     cond = allowed_doc_cond(current_user, Opportunity, Company)
