@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO)
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, auth, imports, import_log, feedback, dashboard, activity
+from app.routers import companies, contacts, users, agenti, opportunities, prodotti, notes, orders, reminders, radar, auth, imports, import_log, feedback, dashboard, activity, backup
 
 from app.database import SessionLocal
 from app.config import settings
@@ -92,6 +92,7 @@ app.include_router(import_log.router)
 app.include_router(feedback.router)
 app.include_router(dashboard.router)
 app.include_router(activity.router)
+app.include_router(backup.router)
 
 
 @app.get("/health")
