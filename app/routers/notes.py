@@ -30,7 +30,7 @@ def crea_nota(data: dict, db: Session = Depends(get_db), current_user=Depends(ge
     log_activity(db, current_user.nome, "nota_creata", "nota",
                  entity_id=note.id, company_id=note.company_id,
                  company_nome=company.ragione_sociale if company else None,
-                 detail={"testo": (note.testo or "")[:80]})
+                 detail={"testo": note.testo or ""})
     db.commit()
     db.refresh(note)
     db.refresh(note, ["opportunity"])
@@ -51,10 +51,15 @@ def aggiorna_nota(note_id: str, data: dict, db: Session = Depends(get_db)):
 
 
 @router.delete("/{note_id}", status_code=204)
-def elimina_nota(note_id: str, db: Session = Depends(get_db)):
+def elimina_nota(note_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     note = db.query(Note).filter(Note.id == note_id).first()
     if not note:
         raise HTTPException(status_code=404, detail="Nota non trovata")
+    company = db.query(Company).filter(Company.id == note.company_id).first()
+    log_activity(db, current_user.nome, "nota_eliminata", "nota",
+                 entity_id=note.id, company_id=note.company_id,
+                 company_nome=company.ragione_sociale if company else None,
+                 detail={"testo": note.testo or ""})
     db.delete(note)
     db.commit()
 

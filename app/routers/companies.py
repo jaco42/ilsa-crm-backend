@@ -465,7 +465,7 @@ def demerge_preview(company_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{company_id}/demerge")
-def demerge(company_id: str, data: dict, db: Session = Depends(get_db)):
+def demerge(company_id: str, data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     import uuid as _uuid
     from app.models.contact import Contact
     from app.models.note import Note
@@ -538,6 +538,12 @@ def demerge(company_id: str, data: dict, db: Session = Depends(get_db)):
     loser.merged_into = None
     loser.merged_at = None
     loser.is_visible = True
+    winner = db.query(Company).filter(Company.id == company_id).first()
+    log_activity(db, current_user.nome, "azienda_demerge", "azienda",
+                 entity_id=company_id, company_id=str(company_id),
+                 company_nome=winner.ragione_sociale if winner else None,
+                 detail={"winner": winner.ragione_sociale if winner else None,
+                         "loser": loser.ragione_sociale, "strategia": strategy})
     db.commit()
     return {"ok": True, "loser_id": loser_id}
 
@@ -592,13 +598,14 @@ def get_azienda(company_id: str, db: Session = Depends(get_db), current_user=Dep
 
 
 @router.post("/merge")
-def merge_aziende(data: dict, db: Session = Depends(get_db)):
+def merge_aziende(data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """data: { survivor_id, duplicate_ids: [id, ...] }"""
     from app.services.merge import merge_companies, _rank
     survivor = db.query(Company).filter(Company.id == data["survivor_id"]).first()
     if not survivor:
         raise HTTPException(status_code=404, detail="Azienda survivor non trovata")
     duplicate_ids = data.get("duplicate_ids") or ([data["duplicate_id"]] if "duplicate_id" in data else [])
+    nomi_eliminati = []
     for dup_id in duplicate_ids:
         duplicate = db.query(Company).filter(Company.id == dup_id).first()
         if not duplicate:
@@ -608,7 +615,12 @@ def merge_aziende(data: dict, db: Session = Depends(get_db)):
                 status_code=400,
                 detail=f"'{duplicate.ragione_sociale}' ha status superiore al survivor scelto. Seleziona il record con status più alto come survivor (cliente > potenziale > lead)."
             )
+        nomi_eliminati.append(duplicate.ragione_sociale)
         merge_companies(survivor, duplicate, db)
+    log_activity(db, current_user.nome, "azienda_merge", "azienda",
+                 entity_id=survivor.id, company_id=str(survivor.id),
+                 company_nome=survivor.ragione_sociale,
+                 detail={"survivor": survivor.ragione_sociale, "eliminate": nomi_eliminati})
     db.commit()
     return {"ok": True, "survivor_id": str(survivor.id)}
 
@@ -628,12 +640,16 @@ def crea_azienda(data: dict, db: Session = Depends(get_db), current_user=Depends
 
 
 @router.delete("/{company_id}", status_code=204)
-def elimina_azienda(company_id: str, db: Session = Depends(get_db)):
+def elimina_azienda(company_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Azienda non trovata")
     if company.sap_customer_id:
         raise HTTPException(status_code=403, detail="Impossibile eliminare un'azienda sincronizzata da SAP")
+    log_activity(db, current_user.nome, "azienda_eliminata", "azienda",
+                 entity_id=company.id, company_id=str(company.id),
+                 company_nome=company.ragione_sociale,
+                 detail={"ragione_sociale": company.ragione_sociale, "paese": company.paese})
     db.delete(company)
     db.commit()
 

@@ -136,7 +136,7 @@ def crea_segnalazione(data: dict, db: Session = Depends(get_db), current_user=De
                      "l2": prodotto.categoria_l2 if prodotto else None,
                      "quantita": s.quantita,
                      "unita": s.unita,
-                     "note": (s.note or "")[:80] if s.note else None,
+                     "note": s.note or None,
                  })
     db.commit()
     db.refresh(s)
@@ -165,7 +165,7 @@ def aggiorna_segnalazione(segnalazione_id: str, data: dict, db: Session = Depend
                      "l2": s.prodotto.categoria_l2 if s.prodotto else None,
                      "quantita": s.quantita,
                      "unita": s.unita,
-                     "note": (s.note or "")[:80] if s.note else None,
+                     "note": s.note or None,
                  })
     db.commit()
     db.refresh(s)
@@ -173,11 +173,20 @@ def aggiorna_segnalazione(segnalazione_id: str, data: dict, db: Session = Depend
 
 
 @router.delete("/segnalazioni/{segnalazione_id}", status_code=204)
-def elimina_segnalazione(segnalazione_id: str, db: Session = Depends(get_db)):
-    s = db.query(RadarSegnalazione).filter(RadarSegnalazione.id == segnalazione_id).first()
+def elimina_segnalazione(segnalazione_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    s = db.query(RadarSegnalazione).options(
+        joinedload(RadarSegnalazione.company), joinedload(RadarSegnalazione.prodotto)
+    ).filter(RadarSegnalazione.id == segnalazione_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Segnalazione non trovata")
     prodotto_id = s.prodotto_id
+    log_activity(db, current_user.nome, "radar_eliminato", "radar",
+                 entity_id=s.id, company_id=str(s.company_id) if s.company_id else None,
+                 company_nome=s.company.ragione_sociale if s.company else None,
+                 detail={"prodotto": s.prodotto.nome if s.prodotto else None,
+                         "l1": s.prodotto.categoria_l1 if s.prodotto else None,
+                         "l2": s.prodotto.categoria_l2 if s.prodotto else None,
+                         "quantita": s.quantita, "unita": s.unita})
     db.delete(s)
     db.flush()
     remaining = db.query(RadarSegnalazione).filter(RadarSegnalazione.prodotto_id == prodotto_id).count()

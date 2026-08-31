@@ -2,11 +2,18 @@ from app.models.activity_log import ActivityLog
 
 ACTION_LABELS = {
     "nota_creata":         "Nota creata",
+    "nota_eliminata":      "Nota eliminata",
     "contatto_creato":     "Contatto creato",
     "contatto_modificato": "Contatto modificato",
+    "contatto_eliminato":  "Contatto eliminato",
+    "contatto_merge":      "Contatti uniti",
     "azienda_creata":      "Azienda creata",
+    "azienda_eliminata":   "Azienda eliminata",
+    "azienda_merge":       "Aziende unite",
+    "azienda_demerge":     "Aziende separate",
     "radar_creato":        "Radar creato",
     "radar_modificato":    "Radar modificato",
+    "radar_eliminato":     "Radar eliminato",
 }
 
 

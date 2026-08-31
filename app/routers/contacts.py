@@ -164,7 +164,7 @@ def aggiorna_contatto(contact_id: str, data: dict, db: Session = Depends(get_db)
 
 
 @router.post("/merge")
-def merge_contatti(data: dict, db: Session = Depends(get_db)):
+def merge_contatti(data: dict, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     survivor_id = data.get("survivor_id")
     duplicate_ids = data.get("duplicate_ids", [])
     if not survivor_id or not duplicate_ids:
@@ -174,12 +174,14 @@ def merge_contatti(data: dict, db: Session = Depends(get_db)):
     if not survivor:
         raise HTTPException(status_code=404, detail="Contatto survivor non trovato")
 
+    nomi_eliminati = []
     for dup_id in duplicate_ids:
         if dup_id == survivor_id:
             continue
         duplicate = db.query(Contact).filter(Contact.id == dup_id).first()
         if not duplicate:
             continue
+        nomi_eliminati.append(duplicate.nome)
         for field in ("ruolo", "telefono", "email", "note"):
             if not getattr(survivor, field):
                 val = getattr(duplicate, field)
@@ -194,6 +196,10 @@ def merge_contatti(data: dict, db: Session = Depends(get_db)):
         db.delete(duplicate)
         db.flush()  # invia DELETE dopo che le note sono già state riassegnate
 
+    log_activity(db, current_user.nome, "contatto_merge", "contatto",
+                 entity_id=survivor.id, company_id=str(survivor.company_id) if survivor.company_id else None,
+                 company_nome=survivor.company.ragione_sociale if survivor.company else None,
+                 detail={"survivor": survivor.nome, "eliminati": nomi_eliminati})
     db.commit()
     db.refresh(survivor)
     db.refresh(survivor, ["company"])
@@ -201,10 +207,14 @@ def merge_contatti(data: dict, db: Session = Depends(get_db)):
 
 
 @router.delete("/{contact_id}", status_code=204)
-def elimina_contatto(contact_id: str, db: Session = Depends(get_db)):
-    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+def elimina_contatto(contact_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    contact = db.query(Contact).options(joinedload(Contact.company)).filter(Contact.id == contact_id).first()
     if not contact:
         raise HTTPException(status_code=404, detail="Contatto non trovato")
+    log_activity(db, current_user.nome, "contatto_eliminato", "contatto",
+                 entity_id=contact.id, company_id=str(contact.company_id) if contact.company_id else None,
+                 company_nome=contact.company.ragione_sociale if contact.company else None,
+                 detail={"nome": contact.nome, "ruolo": contact.ruolo})
     db.delete(contact)
     db.commit()
 
