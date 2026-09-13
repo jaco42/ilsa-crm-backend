@@ -57,12 +57,30 @@ def _is_royalty(d: str) -> bool:
 # usecols — carica solo le colonne necessarie (-80÷97% RAM per DF)
 # ---------------------------------------------------------------------------
 
-_KNA1_COLS = {"Cliente", "Nome 1", "Nome 2", "Partita IVA 1", "Part.IVA", "Partita IVA",
-              "Via", "Località", "Localit?", "CAP", "Rg", "Pse", "Telefono 1", "Data ap."}
-_VBAK_COLS = {"Doc. vend.", "Committ.", "Val.netto", "Fine off.", "Data cr.", "Creato", "Data doc.", "OrgCm", "TpDV"}
-_VBAP_COLS = {"Doc. vend.", "Materiale", "Definizione",
-              "Qtà ordine", "Qt? ordine", "Qt ordine", "UM", "Prz. netto", "Val.netto",
-              "Gerarchia prodotti", "Rf"}
+_KNA1_COLS = {
+    "Cliente",
+    "Nome 1", "Nome 2",
+    "Partita IVA 1", "Part.IVA", "Partita IVA",
+    "Via", "Località", "Localit?", "CAP", "Rg", "Pse",
+    "Telefono 1", "Data ap.",
+}
+_VBAK_COLS = {
+    "Doc. vend.", "Committ.", "OrgCm", "TpDV", "Data cr.",
+    # valore netto: etichetta corta o lunga a seconda della larghezza colonna SAP
+    "Val.netto", "Valore netto",
+    # date con spazio singolo o multi-spazio (normalizzato dopo il caricamento)
+    "Fine off.", "Data doc.",
+    # creato da: etichetta corta o lunga
+    "Creato", "Creato da",
+}
+_VBAP_COLS = {
+    "Doc. vend.", "Materiale", "Definizione", "Gerarchia prodotti", "Rf",
+    "UM", "Prz. netto",
+    # val.netto: etichetta corta (con eventuale padding) o lunga
+    "Val.netto", "Valore netto",
+    # quantità ordine: varie abbreviazioni SAP
+    "Qtà ordine", "Qt? ordine", "Qt ordine", "Quantità ordine",
+}
 _VBFA_COLS = {"Doc.prec.", "Doc. prec.", "Doc. succ.", "Doc.succ."}
 
 FILE_COLS = {
@@ -97,14 +115,17 @@ def load_csv_bytes(content: bytes, file_type: str = None) -> pd.DataFrame:
     sep = "\t" if probe.count("\t") > probe.count("|") else SEP
 
     needed = FILE_COLS.get(file_type) if file_type else None
-    usecols = (lambda c: c.strip().strip("|").strip() in needed) if needed else None
+    # normalizza multi-spazio: "Fine     off." → "Fine off." prima del match
+    _norm = lambda c: " ".join(c.strip().strip("|").split())
+    usecols = (lambda c: _norm(c) in needed) if needed else None
 
     df = pd.read_csv(
         io.BytesIO(content), sep=sep, dtype=str, encoding=ENCODING,
         skiprows=skip_rows, skipinitialspace=True, on_bad_lines="skip", quoting=3,
         usecols=usecols,
     )
-    df.columns = df.columns.str.strip().str.strip("|")
+    # normalizza anche i nomi colonna nel DataFrame
+    df.columns = pd.Index([" ".join(c.strip().strip("|").split()) for c in df.columns])
     for col in df.columns:
         s = df[col]
         if isinstance(s, pd.DataFrame):
@@ -340,7 +361,7 @@ def _build_posizioni_index(posizioni: pd.DataFrame) -> dict:
         index[doc_id].append((
             get(riga, "Materiale"),
             get(riga, "Definizione"),
-            get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine"),
+            get(riga, "Qtà ordine", "Qt? ordine", "Qt ordine", "Quantità ordine"),
             get(riga, "UM"),
             get(riga, "Prz. netto"),
             get(riga, "Val.netto"),
@@ -520,10 +541,10 @@ def import_offerte_stream(offerte: pd.DataFrame, posizioni_by_doc: dict, offerte
             "stage": stage,
             "tipo_doc": tipo_doc,
             "org_cm": row.get("OrgCm") or None,
-            "valore_totale": parse_decimal(row.get("Val.netto") or ""),
+            "valore_totale": parse_decimal(row.get("Val.netto") or row.get("Valore netto") or ""),
             "data_scadenza": None if stage == STAGE_VINTO else parse_date(row.get("Fine off.") or ""),
             "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
-            "sap_creato_da": row.get("Creato") or None,
+            "sap_creato_da": row.get("Creato") or row.get("Creato da") or None,
         })
     inserted_count = sum(1 for r in all_rows if r["sap_document_id"] not in existing_sap_ids)
     already_present_count = len(all_rows) - inserted_count
@@ -685,10 +706,10 @@ def import_ordini_stream(ordini: pd.DataFrame, posizioni_by_doc: dict, offerta_p
             "nota": _NOTA_DA_TIPO.get(tipo_doc) if tipo_doc else None,
             "contribuisce_fatturato": contribuisce,
             "org_cm": row.get("OrgCm") or None,
-            "valore_totale": parse_decimal(row.get("Val.netto") or ""),
+            "valore_totale": parse_decimal(row.get("Val.netto") or row.get("Valore netto") or ""),
             "data_ordine": parse_date(row.get("Data doc.") or ""),
             "data_creazione_sap": parse_date(row.get("Data cr.") or ""),
-            "sap_creato_da": row.get("Creato") or None,
+            "sap_creato_da": row.get("Creato") or row.get("Creato da") or None,
         })
         if opp_id and opp_stage in (STAGE_OFFERTA, "Scaduta"):
             opp_ids_to_win.append(opp_id)
