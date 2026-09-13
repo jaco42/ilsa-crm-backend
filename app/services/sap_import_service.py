@@ -75,8 +75,25 @@ def load_csv_bytes(content: bytes, file_type: str = None) -> pd.DataFrame:
         sample = content.decode(ENCODING, errors="replace")
     except Exception:
         sample = content.decode("utf-8", errors="replace")
-    lines = [l for l in sample.split("\n") if l.strip()]
-    probe = lines[3] if len(lines) > 3 else (lines[0] if lines else "")
+    raw_lines = sample.split("\n")
+
+    # rileva riga header: prima riga con pipe E contenuto alfabetico
+    header_row = 3  # fallback
+    for i, line in enumerate(raw_lines[:10]):
+        if "|" in line and any(c.isalpha() for c in line):
+            header_row = i
+            break
+
+    # salta anche la riga separatore (dashes) subito dopo l'header, se presente
+    skip_rows = list(range(header_row))
+    if header_row + 1 < len(raw_lines):
+        nxt = raw_lines[header_row + 1]
+        if nxt.strip() and all(c in "-| \t\r\n" for c in nxt):
+            skip_rows.append(header_row + 1)
+
+    # rileva separatore dalla riga dati
+    probe_idx = (skip_rows[-1] + 1) if skip_rows else (header_row + 1)
+    probe = raw_lines[probe_idx] if probe_idx < len(raw_lines) else (raw_lines[header_row] if raw_lines else "")
     sep = "\t" if probe.count("\t") > probe.count("|") else SEP
 
     needed = FILE_COLS.get(file_type) if file_type else None
@@ -84,7 +101,7 @@ def load_csv_bytes(content: bytes, file_type: str = None) -> pd.DataFrame:
 
     df = pd.read_csv(
         io.BytesIO(content), sep=sep, dtype=str, encoding=ENCODING,
-        skiprows=3, skipinitialspace=True, on_bad_lines="skip", quoting=3,
+        skiprows=skip_rows, skipinitialspace=True, on_bad_lines="skip", quoting=3,
         usecols=usecols,
     )
     df.columns = df.columns.str.strip().str.strip("|")
