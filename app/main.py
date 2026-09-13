@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     scheduler = BackgroundScheduler()
     scheduler.add_job(_scheduler_job, "interval", minutes=1)
     scheduler.add_job(_mark_scadute_job, "interval", hours=24)
+    scheduler.add_job(backup.send_backup_email, "cron", day_of_week="sun", hour=19, minute=0)
     scheduler.start()
     yield
     scheduler.shutdown()

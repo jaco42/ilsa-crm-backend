@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     resend_from: str = "ILSA CRM <onboarding@resend.dev>"
     allowed_origins: str = "http://localhost:5173,http://localhost:5174"
+    backup_email: str = ""
 
     class Config:
         env_file = ".env"
