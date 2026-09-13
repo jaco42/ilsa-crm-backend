@@ -28,9 +28,10 @@ def _run_pg_dump() -> bytes:
     return gzip.compress(result.stdout)
 
 
-def send_backup_email():
+def send_backup_email(override_to: str | None = None):
     import resend
-    if not settings.backup_email or not settings.resend_api_key:
+    recipient = override_to or settings.backup_email
+    if not recipient or not settings.resend_api_key:
         return
 
     compressed = _run_pg_dump()
@@ -40,7 +41,7 @@ def send_backup_email():
     resend.api_key = settings.resend_api_key
     resend.Emails.send({
         "from": settings.resend_from,
-        "to": [settings.backup_email],
+        "to": [recipient],
         "subject": "Backup CRM automatico",
         "text": f"Backup automatico del database ILSA CRM del {date.today().strftime('%d/%m/%Y')}.\n\nFile: {filename}\nDimensione: {size_kb} KB\n\nILSA CRM",
         "attachments": [{"filename": filename, "content": list(compressed)}],
@@ -62,9 +63,9 @@ def download_dump(current_user=Depends(require_admin)):
 
 
 @router.post("/send")
-def send_dump_email(current_user=Depends(require_admin)):
+def send_dump_email(current_user=Depends(require_admin), to: str | None = None):
     try:
-        send_backup_email()
+        send_backup_email(override_to=to)
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
-    return {"ok": True, "to": settings.backup_email}
+    return {"ok": True, "to": to or settings.backup_email}
