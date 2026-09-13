@@ -66,6 +66,6 @@ def download_dump(current_user=Depends(require_admin)):
 def send_dump_email(current_user=Depends(require_admin), to: str | None = None):
     try:
         send_backup_email(override_to=to)
-    except RuntimeError as e:
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"ok": True, "to": to or settings.backup_email}
