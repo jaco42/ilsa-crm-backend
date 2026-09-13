@@ -826,6 +826,11 @@ async def import_sap_stream(
             fase_corrente = "parsing VBAK"
             yield _chunk({"type": "progress", "pct": 9, "fase": "Parsing VBAK..."})
             docvend = load_csv_bytes(file_bytes.pop("vbak"), file_type="vbak"); gc.collect()
+            _doc_col = next((c for c in docvend.columns if c.lower().replace(" ", "").replace(".", "") == "docvend"), None)
+            if _doc_col is None:
+                raise KeyError(f"Colonna 'Doc. vend.' non trovata nel VBAK. Colonne disponibili: {list(docvend.columns)}")
+            if _doc_col != "Doc. vend.":
+                docvend = docvend.rename(columns={_doc_col: "Doc. vend."})
             offerte_df = docvend[docvend["Doc. vend."].str.startswith("5")].copy()
             ordini_df  = docvend[docvend["Doc. vend."].str.startswith("1")].copy()
             del docvend; gc.collect()
