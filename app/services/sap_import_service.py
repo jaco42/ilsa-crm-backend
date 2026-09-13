@@ -458,7 +458,7 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
                 "provincia":        stmt.excluded.provincia,
                 "paese":            stmt.excluded.paese,
                 "partita_iva":      stmt.excluded.partita_iva,
-                "sap_created_at":   stmt.excluded.sap_created_at,
+                "sap_created_at":   _func.coalesce(stmt.excluded.sap_created_at, Company.__table__.c.sap_created_at),
                 "origin":           stmt.excluded.origin,
                 "telefono": _case(
                     (Company.__table__.c.telefono_override == True,
