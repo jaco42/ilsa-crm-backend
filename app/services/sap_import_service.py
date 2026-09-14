@@ -426,7 +426,7 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
             "paese": get(row, "Pse") or None,
             "telefono": get(row, "Telefono 1") or None,
             "partita_iva": piva,
-            "sap_created_at": parse_date(get(row, "Data ap.") or get(row, "Data")),
+            "sap_created_at": parse_date(get(row, "Data ap.", "Data")),
             "status": CompanyStatus.cliente if tipo == "cliente" else CompanyStatus.prospect,
             "origin": CompanyOrigin.sap_sync,
             "created_by": "SAP",
