@@ -62,7 +62,7 @@ _KNA1_COLS = {
     "Nome 1", "Nome 2",
     "Partita IVA 1", "Part.IVA", "Partita IVA",
     "Via", "Località", "Localit?", "CAP", "Rg", "Pse",
-    "Telefono 1", "Data ap.",
+    "Telefono 1", "Data ap.", "Data",
 }
 _VBAK_COLS = {
     "Doc. vend.", "Committ.", "OrgCm", "TpDV", "Data cr.",
@@ -426,7 +426,7 @@ def import_companies_stream(clienti: pd.DataFrame, db: Session):
             "paese": get(row, "Pse") or None,
             "telefono": get(row, "Telefono 1") or None,
             "partita_iva": piva,
-            "sap_created_at": parse_date(get(row, "Data ap.")),
+            "sap_created_at": parse_date(get(row, "Data ap.") or get(row, "Data")),
             "status": CompanyStatus.cliente if tipo == "cliente" else CompanyStatus.prospect,
             "origin": CompanyOrigin.sap_sync,
             "created_by": "SAP",
